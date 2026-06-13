@@ -53,7 +53,7 @@ jobs:
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --noconsole --name chunhui-gui-mac main_gui.py
+        pyinstaller --onefile --noconsole --name chunhui-gui-mac --icon=app.icns main_gui.py
 
     - name: Compress macOS Application
       run: |
