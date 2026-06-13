@@ -147,6 +147,11 @@ def clean_html(text):
     text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
     text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL)
     
+    # 提取 <input ... value="xxx"> 中的 value 并替换
+    def replace_input(match):
+        return match.group(1) or ""
+    text = re.sub(r'<input[^>]*value=["\']([^"\']*)["\'][^>]*>', replace_input, text, flags=re.IGNORECASE)
+    
     # 替换 <a> 标签超链接为 "文本 (链接)" 格式以在终端打印
     def replace_link(match):
         href = match.group(1) or match.group(2) or ""
