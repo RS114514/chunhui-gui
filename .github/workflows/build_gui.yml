@@ -1,0 +1,102 @@
+name: Build and Release GUI
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install customtkinter Pillow pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --onefile --noconsole --name chunhui-gui-win --icon=app.ico main_gui.py
+
+    - name: Create Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: chunhui-gui-windows
+        path: dist/chunhui-gui-win.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install customtkinter Pillow pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --onefile --noconsole --name chunhui-gui-mac main_gui.py
+
+    - name: Compress macOS Application
+      run: |
+        cd dist
+        zip -r chunhui-gui-mac.zip chunhui-gui-mac.app || zip -r chunhui-gui-mac.zip chunhui-gui-mac
+
+    - name: Create Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: chunhui-gui-macos
+        path: dist/chunhui-gui-mac.zip
+
+  publish-release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download Windows Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: chunhui-gui-windows
+        path: dist
+
+    - name: Download macOS Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: chunhui-gui-macos
+        path: dist
+
+    - name: Create or Update GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: latest
+        name: Latest GUI Release (Auto Build)
+        body: |
+          春晖中学校园网跨平台 GUI 客户端最新的自动编译版本。
+          
+          ### 📦 包含资源：
+          - **`chunhui-gui-win.exe`**: Windows 64位独立运行版（免安装，解压即用）。
+          - **`chunhui-gui-mac.zip`**: macOS 平台便携绿色压缩包（解压后双击即可运行）。
+        draft: false
+        prerelease: true
+        files: |
+          dist/chunhui-gui-win.exe
+          dist/chunhui-gui-mac.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

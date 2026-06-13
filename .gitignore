@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# OS
+.DS_Store
+.gallery/
+
+# IDE
+.vscode/
+.idea/
+.gemini/
+.system_generated/
+*.log
+*.zip
+*.bat
