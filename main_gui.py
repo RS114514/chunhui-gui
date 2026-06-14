@@ -19,6 +19,14 @@ import ch_cli
 ctk.set_appearance_mode("System")  # System, Dark, Light
 ctk.set_default_color_theme("blue")  # blue, green, dark-blue
 
+def get_theme_colors():
+    is_dark = (ctk.get_appearance_mode() == "Dark")
+    return {
+        "card_bg": "#2b2b2b" if is_dark else "#dbdbdb",
+        "text_primary": "#ffffff" if is_dark else "#000000",
+        "text_secondary": "#aaaaaa" if is_dark else "#555555"
+    }
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -39,8 +47,6 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        # 异步线程工具
-        self.thread_lock = threading.Lock()
 
         # 布局：1行 x 2列 (左侧导航, 右侧多面板展示区)
         self.grid_rowconfigure(0, weight=1)
@@ -202,6 +208,7 @@ class CookieLoginDialog(ctk.CTkToplevel):
         
         # 弹窗置顶
         self.transient(parent)
+        self.wait_visibility()
         self.grab_set()
 
         self.grid_columnconfigure(0, weight=1)
@@ -265,21 +272,25 @@ class CookieLoginDialog(ctk.CTkToplevel):
             "csrftoken": csrftoken
         }
         
-        ch_cli.save_session(session_data)
+        if not ch_cli.save_session(session_data):
+            messagebox.showerror("错误", "无法保存会话文件，请检查目录权限！")
+            return
         
         # 异步做一次网络连线检测
         self.ok_btn.configure(state="disabled", text="正在校验...")
         
         def check_task():
             status, _, _ = ch_cli.make_request("/article/article-detail/37079/", method="GET")
+            if not self.winfo_exists():
+                return
             if status == 200:
                 self.parent.set_login_status(True, "导入成功")
-                self.parent.after(0, lambda: messagebox.showinfo("成功", "Cookie 校验通过，登录成功！"))
-                self.parent.after(0, self.destroy)
+                self.parent.after(0, lambda: messagebox.showinfo("成功", "Cookie 校验通过，登录成功！") if self.winfo_exists() else None)
+                self.parent.after(0, lambda: self.destroy() if self.winfo_exists() else None)
             else:
                 self.parent.set_login_status(False, f"HTTP {status} 校验失败")
-                self.parent.after(0, lambda: messagebox.showerror("失败", f"Cookie 连线校验失败 (HTTP: {status})，请重新获取。"))
-                self.parent.after(0, lambda: self.ok_btn.configure(state="normal", text="导入并检测"))
+                self.parent.after(0, lambda: messagebox.showerror("失败", f"Cookie 连线校验失败 (HTTP: {status})，请重新获取。") if self.winfo_exists() else None)
+                self.parent.after(0, lambda: self.ok_btn.configure(state="normal", text="导入并检测") if self.winfo_exists() else None)
 
         threading.Thread(target=check_task, daemon=True).start()
 
@@ -329,6 +340,8 @@ class MessagesFrame(ctk.CTkFrame):
 
     def load_list(self):
         self.refresh_btn.configure(state="disabled", text="正在拉取...")
+        self.prev_btn.configure(state="disabled")
+        self.next_btn.configure(state="disabled")
         for child in self.scroll.winfo_children():
             child.destroy()
             
@@ -365,6 +378,8 @@ class MessagesFrame(ctk.CTkFrame):
 
         def callback(res):
             self.refresh_btn.configure(state="normal", text="🔄 刷新列表")
+            self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
+            self.next_btn.configure(state="normal")
             for child in self.scroll.winfo_children():
                 child.destroy()
                 
@@ -380,6 +395,7 @@ class MessagesFrame(ctk.CTkFrame):
                 return
                 
             self.loaded = True
+            colors = get_theme_colors()
             for msg_id, title, sender, date in data:
                 card = ctk.CTkFrame(self.scroll, corner_radius=6)
                 card.pack(fill="x", padx=5, pady=5)
@@ -387,17 +403,14 @@ class MessagesFrame(ctk.CTkFrame):
                 # 双列：左侧文字，右侧按钮
                 card.columnconfigure(0, weight=1)
                 
-                txt_frame = ctk.CTkFrame(card, fg_color="transparent")
-                txt_frame.grid(row=0, column=0, padx=15, pady=10, sticky="w")
+                t_lbl = tk.Label(card, text=title, font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
+                t_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
                 
-                t_lbl = ctk.CTkLabel(txt_frame, text=title, font=ctk.CTkFont(size=14, weight="bold"), justify="left")
-                t_lbl.pack(anchor="w")
-                
-                info_lbl = ctk.CTkLabel(txt_frame, text=f"发送人: {sender}   |   日期: {date}   |   ID: {msg_id}", text_color="grey60", font=ctk.CTkFont(size=11))
-                info_lbl.pack(anchor="w", pady=(2, 0))
+                info_lbl = tk.Label(card, text=f"发送人: {sender}   |   日期: {date}   |   ID: {msg_id}", fg=colors["text_secondary"], bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
+                info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
                 
                 btn = ctk.CTkButton(card, text="阅读正文", width=90, command=lambda m=msg_id: self.show_detail(m))
-                btn.grid(row=0, column=1, padx=15, pady=10)
+                btn.grid(row=0, column=1, rowspan=2, padx=15, pady=10)
 
         self.controller.run_async(query_messages, callback=callback)
 
@@ -416,6 +429,7 @@ class MessageDetailWindow(ctk.CTkToplevel):
         self.geometry("720x540")
         
         self.transient(parent)
+        self.wait_visibility()
         self.grab_set()
 
         self.grid_rowconfigure(2, weight=1)
@@ -489,6 +503,8 @@ class MessageDetailWindow(ctk.CTkToplevel):
             return True, (title, sender, send_time, content, links)
 
         def callback(res):
+            if not self.winfo_exists():
+                return
             success, data = res
             if not success:
                 self.title_lbl.configure(text="加载失败")
@@ -525,6 +541,8 @@ class MessageDetailWindow(ctk.CTkToplevel):
             return True
 
         def callback(res):
+            if not self.winfo_exists():
+                return
             self.download_btn.configure(state="normal", text="📥 下载全部附件")
             messagebox.showinfo("成功", f"所有附件已下载并成功保存至:\n{out_dir}")
 
@@ -594,6 +612,8 @@ class NewsFrame(ctk.CTkFrame):
 
     def load_list(self):
         self.refresh_btn.configure(state="disabled", text="加载中...")
+        self.prev_btn.configure(state="disabled")
+        self.next_btn.configure(state="disabled")
         for child in self.scroll.winfo_children():
             child.destroy()
             
@@ -618,6 +638,8 @@ class NewsFrame(ctk.CTkFrame):
 
         def callback(res):
             self.refresh_btn.configure(state="normal", text="🔄 刷新")
+            self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
+            self.next_btn.configure(state="normal")
             for child in self.scroll.winfo_children():
                 child.destroy()
                 
@@ -633,23 +655,21 @@ class NewsFrame(ctk.CTkFrame):
                 return
                 
             self.loaded = True
+            colors = get_theme_colors()
             for art_id, title, date in data:
                 card = ctk.CTkFrame(self.scroll, corner_radius=6)
                 card.pack(fill="x", padx=5, pady=5)
                 
                 card.columnconfigure(0, weight=1)
                 
-                txt_frame = ctk.CTkFrame(card, fg_color="transparent")
-                txt_frame.grid(row=0, column=0, padx=15, pady=10, sticky="w")
+                t_lbl = tk.Label(card, text=title, font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
+                t_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
                 
-                t_lbl = ctk.CTkLabel(txt_frame, text=title, font=ctk.CTkFont(size=14, weight="bold"), justify="left")
-                t_lbl.pack(anchor="w")
-                
-                info_lbl = ctk.CTkLabel(txt_frame, text=f"发布日期: {date}   |   文章 ID: {art_id}", text_color="grey60", font=ctk.CTkFont(size=11))
-                info_lbl.pack(anchor="w", pady=(2, 0))
+                info_lbl = tk.Label(card, text=f"发布日期: {date}   |   文章 ID: {art_id}", fg=colors["text_secondary"], bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
+                info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
                 
                 btn = ctk.CTkButton(card, text="查看详情", width=90, command=lambda a=art_id: self.show_detail(a))
-                btn.grid(row=0, column=1, padx=15, pady=10)
+                btn.grid(row=0, column=1, rowspan=2, padx=15, pady=10)
 
         self.controller.run_async(query_news, callback=callback)
 
@@ -667,6 +687,7 @@ class NewsDetailWindow(ctk.CTkToplevel):
         self.geometry("740x560")
         
         self.transient(parent)
+        self.wait_visibility()
         self.grab_set()
 
         self.grid_rowconfigure(2, weight=1)
@@ -730,6 +751,8 @@ class NewsDetailWindow(ctk.CTkToplevel):
             return True, (title, source, pub_time, content, links)
 
         def callback(res):
+            if not self.winfo_exists():
+                return
             success, data = res
             if not success:
                 self.title_lbl.configure(text="读取失败")
@@ -765,6 +788,8 @@ class NewsDetailWindow(ctk.CTkToplevel):
             return True
 
         def callback(res):
+            if not self.winfo_exists():
+                return
             self.download_btn.configure(state="normal", text="📥 下载关联文件")
             messagebox.showinfo("成功", f"文件附件下载成功，已保存至:\n{out_dir}")
 
@@ -814,6 +839,8 @@ class HygieneFrame(ctk.CTkFrame):
 
     def load_list(self):
         self.refresh_btn.configure(state="disabled", text="加载中...")
+        self.prev_btn.configure(state="disabled")
+        self.next_btn.configure(state="disabled")
         for child in self.scroll.winfo_children():
             child.destroy()
             
@@ -845,6 +872,8 @@ class HygieneFrame(ctk.CTkFrame):
 
         def callback(res):
             self.refresh_btn.configure(state="normal", text="🔄 刷新")
+            self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
+            self.next_btn.configure(state="normal")
             for child in self.scroll.winfo_children():
                 child.destroy()
                 
@@ -860,23 +889,21 @@ class HygieneFrame(ctk.CTkFrame):
                 return
                 
             self.loaded = True
+            colors = get_theme_colors()
             for record_id, location, description, date in data:
                 card = ctk.CTkFrame(self.scroll, corner_radius=6)
                 card.pack(fill="x", padx=5, pady=5)
                 
                 card.columnconfigure(0, weight=1)
                 
-                txt_frame = ctk.CTkFrame(card, fg_color="transparent")
-                txt_frame.grid(row=0, column=0, padx=15, pady=10, sticky="w")
+                loc_lbl = tk.Label(card, text=f"📍 检查地点: {location}   |   检查日期: {date}", font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
+                loc_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
                 
-                loc_lbl = ctk.CTkLabel(txt_frame, text=f"📍 检查地点: {location}   |   检查日期: {date}", font=ctk.CTkFont(size=13, weight="bold"))
-                loc_lbl.pack(anchor="w")
-                
-                desc_lbl = ctk.CTkLabel(txt_frame, text=f"违纪描述: {description}", text_color="grey70" if ctk.get_appearance_mode() == "Dark" else "gray30", font=ctk.CTkFont(size=12), justify="left")
-                desc_lbl.pack(anchor="w", pady=(4, 0))
+                desc_lbl = tk.Label(card, text=f"违纪描述: {description}", fg=colors["text_secondary"], bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
+                desc_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
                 
                 btn = ctk.CTkButton(card, text="多媒体详情", width=95, command=lambda r=record_id: self.show_detail(r))
-                btn.grid(row=0, column=1, padx=15, pady=10)
+                btn.grid(row=0, column=1, rowspan=2, padx=15, pady=10)
 
         self.controller.run_async(query_hygiene, callback=callback)
 
@@ -894,6 +921,7 @@ class HygieneDetailWindow(ctk.CTkToplevel):
         self.geometry("700x520")
         
         self.transient(parent)
+        self.wait_visibility()
         self.grab_set()
 
         self.grid_rowconfigure(2, weight=1)
@@ -965,6 +993,8 @@ class HygieneDetailWindow(ctk.CTkToplevel):
             return True, (desc, recipients_all, media_urls)
 
         def callback(res):
+            if not self.winfo_exists():
+                return
             success, data = res
             if not success:
                 self.title_lbl.configure(text="加载详情失败")
@@ -1007,6 +1037,8 @@ class HygieneDetailWindow(ctk.CTkToplevel):
             return True
 
         def callback(res):
+            if not self.winfo_exists():
+                return
             self.download_btn.configure(state="normal", text="📥 下载现场照片")
             messagebox.showinfo("成功", f"照片已下载并成功保存至:\n{out_dir}")
 
@@ -1201,25 +1233,27 @@ class BedroomFrame(ctk.CTkFrame):
                 empty.pack(pady=40)
                 return
                 
+            colors = get_theme_colors()
             for room, cls_name, hyg, disc, total in data:
                 card = ctk.CTkFrame(self.hyg_scroll, corner_radius=6)
                 card.pack(fill="x", padx=5, pady=4)
                 
                 card.columnconfigure(0, weight=1)
                 
-                txt_frame = ctk.CTkFrame(card, fg_color="transparent")
-                txt_frame.grid(row=0, column=0, padx=15, pady=8, sticky="w")
+                title_lbl = tk.Label(card, text=f"🏠 寝室: {room}   ({cls_name})", font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
+                title_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
                 
-                title_lbl = ctk.CTkLabel(txt_frame, text=f"🏠 寝室: {room}   ({cls_name})", font=ctk.CTkFont(size=13, weight="bold"))
-                title_lbl.pack(anchor="w")
-                
-                score_lbl = ctk.CTkLabel(
-                    txt_frame, 
+                score_color = "#ff5722" if total != "0" else colors["text_secondary"]
+                score_lbl = tk.Label(
+                    card, 
                     text=f"卫生扣分: {hyg}   |   纪律扣分: {disc}   |   合计扣分: {total}", 
-                    text_color="#ff5722" if total != "0" else "grey60", 
-                    font=ctk.CTkFont(size=12)
+                    fg=score_color, 
+                    bg=colors["card_bg"],
+                    font=("Helvetica", 9),
+                    anchor="w",
+                    justify="left"
                 )
-                score_lbl.pack(anchor="w", pady=(2, 0))
+                score_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
 
         self.controller.run_async(query_task, callback=callback)
 
@@ -1383,29 +1417,24 @@ class DutyFrame(ctk.CTkFrame):
         for child in self.all_scroll.winfo_children():
             child.destroy()
             
+        colors = get_theme_colors()
         for d in duties:
             card = ctk.CTkFrame(self.all_scroll, corner_radius=6, border_width=1 if d["is_current"] else 0, border_color="#00adb5")
             card.pack(fill="x", padx=5, pady=4)
             
             card.columnconfigure(0, weight=1)
             
-            txt_frame = ctk.CTkFrame(card, fg_color="transparent")
-            txt_frame.grid(row=0, column=0, padx=15, pady=8, sticky="w")
-            
             title_text = f"📅 {d['week']}"
             if d["is_current"]:
                 title_text += "  [当前值周]"
-            title_lbl = ctk.CTkLabel(
-                txt_frame, 
-                text=title_text, 
-                font=ctk.CTkFont(size=13, weight="bold"), 
-                text_color="#00adb5" if d["is_current"] else ("gray10", "gray90")
-            )
-            title_lbl.pack(anchor="w")
+                
+            t_color = "#00adb5" if d["is_current"] else colors["text_primary"]
+            title_lbl = tk.Label(card, text=title_text, font=("Helvetica", 11, "bold"), fg=t_color, bg=colors["card_bg"], anchor="w", justify="left")
+            title_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
             
             det_text = f"行政值周: {d['admin']}   |   值周班级: {d['class']}   |   时间: {d['date']}"
-            det_lbl = ctk.CTkLabel(txt_frame, text=det_text, text_color="grey60", font=ctk.CTkFont(size=12))
-            det_lbl.pack(anchor="w", pady=(2, 0))
+            det_lbl = tk.Label(card, text=det_text, fg=colors["text_secondary"], bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
+            det_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
 
     def search_duty(self):
         q = self.search_entry.get().strip()
@@ -1473,6 +1502,8 @@ class LostFoundFrame(ctk.CTkFrame):
 
     def load_list(self):
         self.refresh_btn.configure(state="disabled", text="加载中...")
+        self.prev_btn.configure(state="disabled")
+        self.next_btn.configure(state="disabled")
         for child in self.scroll.winfo_children():
             child.destroy()
             
@@ -1508,6 +1539,8 @@ class LostFoundFrame(ctk.CTkFrame):
 
         def callback(res):
             self.refresh_btn.configure(state="normal", text="🔄 刷新")
+            self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
+            self.next_btn.configure(state="normal")
             for child in self.scroll.winfo_children():
                 child.destroy()
                 
@@ -1523,34 +1556,26 @@ class LostFoundFrame(ctk.CTkFrame):
                 return
                 
             self.loaded = True
+            colors = get_theme_colors()
             for lf_id, category, title, reporter, start_date, status_text in data:
                 card = ctk.CTkFrame(self.scroll, corner_radius=6)
                 card.pack(fill="x", padx=5, pady=4)
                 
                 card.columnconfigure(0, weight=1)
                 
-                txt_frame = ctk.CTkFrame(card, fg_color="transparent")
-                txt_frame.grid(row=0, column=0, padx=15, pady=8, sticky="w")
-                
                 # 状态高亮
                 tag_color = "#f44336" if "丢" in category else "#4caf50"
-                stat_color = "#f44336" if "等待" in status_text else "grey60"
+                stat_color = "#f44336" if "等待" in status_text else colors["text_secondary"]
                 
-                title_lbl = ctk.CTkLabel(
-                    txt_frame, 
-                    text=f"[{category}]  {title}", 
-                    font=ctk.CTkFont(size=14, weight="bold"),
-                    text_color=tag_color,
-                    justify="left"
-                )
-                title_lbl.pack(anchor="w")
+                title_lbl = tk.Label(card, text=f"[{category}]  {title}", font=("Helvetica", 11, "bold"), fg=tag_color, bg=colors["card_bg"], anchor="w", justify="left")
+                title_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
                 
                 info_text = f"发布处: {reporter}   |   发布日期: {start_date}   |   状态: {status_text}"
-                info_lbl = ctk.CTkLabel(txt_frame, text=info_text, font=ctk.CTkFont(size=11), text_color=stat_color)
-                info_lbl.pack(anchor="w", pady=(2, 0))
+                info_lbl = tk.Label(card, text=info_text, fg=stat_color, bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
+                info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
                 
                 btn = ctk.CTkButton(card, text="查看招领", width=90, command=lambda l=lf_id: self.show_detail(l))
-                btn.grid(row=0, column=1, padx=15, pady=10)
+                btn.grid(row=0, column=1, rowspan=2, padx=15, pady=10)
 
         self.controller.run_async(query_lf, callback=callback)
 
@@ -1568,6 +1593,7 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
         self.geometry("700x520")
         
         self.transient(parent)
+        self.wait_visibility()
         self.grab_set()
 
         self.grid_rowconfigure(2, weight=1)
@@ -1591,10 +1617,10 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
         self.attachment_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(5, 15))
         self.attachment_frame.columnconfigure(0, weight=1)
         
-        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="📷 正在分析物品配图...", text_color="grey60", font=ctk.CTkFont(size=12))
+        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="📎 正在提取关联附件...", text_color="grey60", font=ctk.CTkFont(size=12))
         self.att_lbl.grid(row=0, column=0, padx=15, pady=10, sticky="w")
 
-        self.download_btn = ctk.CTkButton(self.attachment_frame, text="📥 保存招领图片", state="disabled", width=120, command=self.download_all)
+        self.download_btn = ctk.CTkButton(self.attachment_frame, text="📥 下载全部文件", state="disabled", width=120, command=self.download_all)
         self.download_btn.grid(row=0, column=1, padx=15, pady=10)
 
         self.media_urls = []
@@ -1642,14 +1668,28 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
                         media_urls.append(f"{ch_cli.BASE_URL}{img}")
                     else:
                         media_urls.append(img)
+                        
+            vids = re.findall(r'<video[^>]+src=["\'](.*?)["\']', html_content)
+            for vid in vids:
+                if not vid.startswith("http") and vid.startswith("/"):
+                    media_urls.append(f"{ch_cli.BASE_URL}{vid}")
+                else:
+                    media_urls.append(vid)
+
+            attachment_links = ch_cli.extract_attachment_links(html_content)
+            for link in attachment_links:
+                if link not in media_urls:
+                    media_urls.append(link)
             return True, (title, reporter, reviewer, pub_time, content, media_urls)
 
         def callback(res):
+            if not self.winfo_exists():
+                return
             success, data = res
             if not success:
                 self.title_lbl.configure(text="加载详情失败")
                 self.textbox.insert("0.0", data)
-                self.att_lbl.configure(text="📷 无法加载招领配图")
+                self.att_lbl.configure(text="📎 无法加载招领配图/附件")
                 return
                 
             title, reporter, reviewer, pub_time, content, media_urls = data
@@ -1659,10 +1699,10 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
             
             self.media_urls = media_urls
             if media_urls:
-                self.att_lbl.configure(text=f"📷 发现该失物招领附带了 {len(media_urls)} 张实物照片", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
+                self.att_lbl.configure(text=f"📎 发现该失物招领关联了 {len(media_urls)} 个多媒体文件或附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
                 self.download_btn.configure(state="normal")
             else:
-                self.att_lbl.configure(text="📷 本招领未附带任何实物照片")
+                self.att_lbl.configure(text="📎 本招领未检测到多媒体附件或关联文件")
 
         self.parent.run_async(worker, callback=callback)
 
@@ -1680,8 +1720,10 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
             return True
 
         def callback(res):
-            self.download_btn.configure(state="normal", text="📥 保存招领图片")
-            messagebox.showinfo("成功", f"照片已下载并成功保存至:\n{out_dir}")
+            if not self.winfo_exists():
+                return
+            self.download_btn.configure(state="normal", text="📥 下载全部文件")
+            messagebox.showinfo("成功", f"文件附件下载成功，已保存至:\n{out_dir}")
 
         self.parent.run_async(task, callback=callback)
 
