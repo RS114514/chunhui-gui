@@ -27,7 +27,7 @@ C_CYAN = "\033[36m"
 C_GREY = "\033[90m"
 
 def log_success(msg):
-    print(f"{C_GREEN}{C_BOLD}[✓] {msg}{C_RESET}")
+    print(f"{C_GREEN}{C_BOLD}[OK] {msg}{C_RESET}")
 
 def log_info(msg):
     print(f"{C_CYAN}[i] {msg}{C_RESET}")
@@ -36,7 +36,7 @@ def log_warn(msg):
     print(f"{C_YELLOW}[!] {msg}{C_RESET}")
 
 def log_error(msg):
-    print(f"{C_RED}{C_BOLD}[✗] {msg}{C_RESET}")
+    print(f"{C_RED}{C_BOLD}[x] {msg}{C_RESET}")
 
 def load_session():
     if os.path.exists(SESSION_FILE):
@@ -261,41 +261,65 @@ def draw_table(headers, col_widths, rows):
     print(f"{C_BLUE}└" + "┴".join("─" * w for w in col_widths) + f"┘{C_RESET}")
 
 def draw_schedule_table(data_obj):
-    col_widths = [10, 16, 16, 16, 16, 16]
+    if not data_obj or not data_obj[0]:
+        return
+    
+    num_cols = len(data_obj[0])
+    col_widths = [10] + [16] * (num_cols - 1)
+    
+    border_line = "+" + "+".join("-" * w for w in col_widths) + "+"
     
     # Top border
-    print(f"\n{C_BLUE}┌" + "┬".join("─" * w for w in col_widths) + f"┐{C_RESET}")
+    print(f"\n{C_BLUE}{border_line}{C_RESET}")
     
     # Header row
-    header_padded = [pad_text(item, col_widths[i]) for i, item in enumerate(data_obj[0])]
-    print(f"{C_BLUE}│{C_RESET}" + f"{C_BLUE}│{C_RESET}".join(f"{C_BOLD}{C_CYAN}{item}{C_RESET}" for item in header_padded) + f"{C_BLUE}│{C_RESET}")
+    header_padded = [pad_text(item.replace("★", ""), col_widths[i]) for i, item in enumerate(data_obj[0])]
+    print(f"{C_BLUE}|{C_RESET}" + f"{C_BLUE}|{C_RESET}".join(f"{C_BOLD}{C_CYAN}{item}{C_RESET}" for item in header_padded) + f"{C_BLUE}|{C_RESET}")
     
     # Rows
     for row_idx, row in enumerate(data_obj[1:]):
         # Separator line
-        print(f"{C_BLUE}├" + "┼".join("─" * w for w in col_widths) + f"┤{C_RESET}")
+        print(f"{C_BLUE}{border_line}{C_RESET}")
         
         row_padded = []
         for col_idx, item in enumerate(row):
             item_str = str(item).strip()
+            
+            is_starred = "★" in item_str
+            item_str = item_str.replace("★", "")
+            
             if not item_str:
                 item_str = "-"
-            padded = pad_text(item_str, col_widths[col_idx])
+            
+            max_w = col_widths[col_idx] if col_idx < len(col_widths) else 16
+            vis_w = get_visual_width(item_str)
+            if vis_w > max_w:
+                truncated = ""
+                curr_w = 0
+                for char in item_str:
+                    char_w = 2 if unicodedata.east_asian_width(char) in ('W', 'F', 'A') else 1
+                    if curr_w + char_w > max_w - 3:
+                        break
+                    truncated += char
+                    curr_w += char_w
+                item_str = truncated + "..."
+                
+            padded = pad_text(item_str, max_w)
             
             if col_idx == 0:
                 row_padded.append(f"{C_BOLD}{C_GREEN}{padded}{C_RESET}")
             else:
-                if "★" in item_str:
+                if is_starred:
                     row_padded.append(f"{C_YELLOW}{padded}{C_RESET}")
                 elif item_str == "-":
                     row_padded.append(f"{C_GREY}{padded}{C_RESET}")
                 else:
                     row_padded.append(f"{padded}")
                     
-        print(f"{C_BLUE}│{C_RESET}" + f"{C_BLUE}│{C_RESET}".join(row_padded) + f"{C_BLUE}│{C_RESET}")
+        print(f"{C_BLUE}|{C_RESET}" + f"{C_BLUE}|{C_RESET}".join(row_padded) + f"{C_BLUE}|{C_RESET}")
         
     # Bottom border
-    print(f"{C_BLUE}└" + "┴".join("─" * w for w in col_widths) + f"┘{C_RESET}")
+    print(f"{C_BLUE}{border_line}{C_RESET}")
 
 def parse_teachers_and_display(html_content):
     main_manager = "未知"
@@ -497,7 +521,7 @@ def cmd_messages(args):
                 if full_url not in attachment_links:
                     attachment_links.append(full_url)
             
-        print(f"\n{C_BOLD}{C_GREEN}✉ 消息详情 {C_RESET}")
+        print(f"\n{C_BOLD}{C_GREEN}消息详情 {C_RESET}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
         print(f"{C_BOLD}标题：{C_RESET} {C_YELLOW}{title}{C_RESET}")
         print(f"{C_BOLD}发送者：{C_RESET} {C_CYAN}{sender}{C_RESET}    |    {C_BOLD}时间：{C_RESET} {C_GREY}{send_time}{C_RESET}")
@@ -509,7 +533,7 @@ def cmd_messages(args):
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
         
         if attachment_links:
-            print(f"{C_BOLD}{C_GREEN}📎 关联附件列表：{C_RESET}")
+            print(f"{C_BOLD}{C_GREEN}关联附件列表：{C_RESET}")
             for i, att_url in enumerate(attachment_links):
                 filename = att_url.split('/')[-1].split('?')[0]
                 filename = urllib.parse.unquote(filename)
@@ -556,7 +580,7 @@ def cmd_messages(args):
         log_warn("没有找到任何消息记录。")
         return
         
-    print(f"\n{C_BOLD}{C_GREEN}✉ 收件箱列表 (第 {page} 页) ==={C_RESET}")
+    print(f"\n{C_BOLD}{C_GREEN}收件箱列表 (第 {page} 页) ==={C_RESET}")
     for row in rows:
         msg_id, title, sender, date = row
         print(f"[{C_GREEN}{msg_id}{C_RESET}] {C_BOLD}{title}{C_RESET}")
@@ -606,7 +630,7 @@ def cmd_hygiene(args):
         if rec2_m:
             recipients_unread = clean_html(rec2_m.group(1))
             
-        print(f"\n{C_BOLD}{C_RED}⚠ 纪律卫生考评详情 {C_RESET}")
+        print(f"\n{C_BOLD}{C_RED}纪律卫生考评详情 {C_RESET}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
         print(f"{C_BOLD}描述：{C_RESET} {C_YELLOW}{desc}{C_RESET}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
@@ -654,7 +678,7 @@ def cmd_hygiene(args):
         log_warn("没有找到任何纪律卫生考评记录。")
         return
         
-    print(f"\n{C_BOLD}{C_GREEN}⚠ 纪律卫生考评记录 (第 {page} 页) ==={C_RESET}")
+    print(f"\n{C_BOLD}{C_GREEN}纪律卫生考评记录 (第 {page} 页) ==={C_RESET}")
     for row in rows:
         record_id, location, description, date = row
         print(f"[{C_GREEN}{record_id}{C_RESET}] 地点: {C_YELLOW}{location}{C_RESET}  |  检查日期: {C_GREY}{date}{C_RESET}")
@@ -726,7 +750,7 @@ def cmd_duty(args):
         print(f"\n{C_BOLD}{C_GREEN}=== 搜索到 {len(matches)} 个匹配值周安排 ==={C_RESET}")
         for d in matches:
             curr_tag = f" {C_BOLD}{C_GREEN}[当前周]{C_RESET}" if d["is_current"] else ""
-            print(f"\n{C_BOLD}{C_CYAN}◆ {d['week']}{curr_tag} ({d['date']}){C_RESET}")
+            print(f"\n{C_BOLD}{C_CYAN}{d['week']}{curr_tag} ({d['date']}){C_RESET}")
             print(f"  {C_BOLD}行政值周：{C_RESET} {C_YELLOW}{d['admin']}{C_RESET}")
             print(f"  {C_BOLD}第一小组：{C_RESET} {d['group1']}")
             print(f"  {C_BOLD}第二小组：{C_RESET} {d['group2']}")
@@ -743,11 +767,11 @@ def cmd_duty(args):
         for d in duties:
             week_disp = d["week"]
             week_color = C_GREEN if d["is_current"] else C_CYAN
-            curr_mark = "★ " if d["is_current"] else ""
+            curr_mark = "* " if d["is_current"] else ""
             print(f"{C_BOLD}{week_color}{curr_mark}{week_disp}{C_RESET} ({C_GREY}{d['date']}{C_RESET})")
             print(f"  行政值周: {C_YELLOW}{d['admin']}{C_RESET}  |  值周班级: {C_GREEN}{d['class']}{C_RESET}")
             print(f"  {C_BLUE}┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄{C_RESET}")
-        print(f"{C_GREY}提示: 带 ★ 的代表当前周次。使用 `python3 ch_cli.py duty --search <姓名>` 可模糊搜索。{C_RESET}\n")
+        print(f"{C_GREY}提示: 带 * 的代表当前周次。使用 `python3 ch_cli.py duty --search <姓名>` 可模糊搜索。{C_RESET}\n")
         return
 
     if not current_week:
@@ -756,7 +780,7 @@ def cmd_duty(args):
         cmd_duty(args)
         return
         
-    print(f"\n{C_BOLD}{C_GREEN}★ 当前值周安排 ({current_week['week']}) ★{C_RESET}")
+    print(f"\n{C_BOLD}{C_GREEN}当前值周安排 ({current_week['week']}){C_RESET}")
     print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
     print(f"{C_BOLD}日期范围：{C_RESET} {C_YELLOW}{current_week['date']}{C_RESET}")
     print(f"{C_BOLD}行政值周：{C_RESET} {C_GREEN}{C_BOLD}{current_week['admin']}{C_RESET}")
@@ -942,7 +966,7 @@ def cmd_news(args):
         if content_m:
             content = clean_html(content_m.group(1))
             
-        print(f"\n{C_BOLD}{C_GREEN}📄 文章详情 {C_RESET}")
+        print(f"\n{C_BOLD}{C_GREEN}文章详情 {C_RESET}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
         print(f"{C_BOLD}标题：{C_RESET} {C_YELLOW}{title}{C_RESET}")
         print(f"{C_BOLD}发布人：{C_RESET} {C_CYAN}{source}{C_RESET}    |    {C_BOLD}时间：{C_RESET} {C_GREY}{pub_time}{C_RESET}")
@@ -952,7 +976,7 @@ def cmd_news(args):
         
         attachment_links = extract_attachment_links(html_content)
         if attachment_links:
-            print(f"{C_BOLD}{C_GREEN}📎 关联附件列表：{C_RESET}")
+            print(f"{C_BOLD}{C_GREEN}关联附件列表：{C_RESET}")
             for i, att_url in enumerate(attachment_links):
                 filename = att_url.split('/')[-1].split('?')[0]
                 filename = urllib.parse.unquote(filename)
@@ -991,7 +1015,7 @@ def cmd_news(args):
     for art_id, title, date in items:
         rows.append([art_id, clean_html(title), clean_html(date)])
         
-    print(f"\n{C_BOLD}{C_GREEN}📄 文章列表 (栏目: {args.column}, 第 {page} 页) ==={C_RESET}")
+    print(f"\n{C_BOLD}{C_GREEN}文章列表 (栏目: {args.column}, 第 {page} 页) ==={C_RESET}")
     for row in rows:
         art_id, title, date = row
         print(f"[{C_GREEN}{art_id}{C_RESET}] {C_BOLD}{title}{C_RESET}")
@@ -1023,7 +1047,7 @@ def cmd_bedroom(args):
         alert_m = re.search(r'class="alert alert-primary"[^>]*>\s*(.*?)\s*</div>', html_content, re.DOTALL)
         if alert_m:
             result_text = clean_html(alert_m.group(1))
-            print(f"\n{C_BOLD}{C_GREEN}🏠 寝室分配查询结果 {C_RESET}")
+            print(f"\n{C_BOLD}{C_GREEN}寝室分配查询结果 {C_RESET}")
             print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
             print(f"{C_YELLOW}{result_text}{C_RESET}")
             print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}\n")
@@ -1095,7 +1119,7 @@ def cmd_bedroom(args):
             log_warn("没有找到任何相关的寝室考评扣分记录。")
             return
             
-        print(f"\n{C_BOLD}{C_GREEN}🧹 {dorm_name} 寝室卫生与纪律扣分考评总表 ==={C_RESET}")
+        print(f"\n{C_BOLD}{C_GREEN}{dorm_name} 寝室卫生与纪律扣分考评总表 ==={C_RESET}")
         for row in rows:
             room, cls, hyg, disc, total = row
             print(f"寝室: {C_GREEN}{C_BOLD}{room}{C_RESET} ({cls})")
@@ -1160,7 +1184,7 @@ def cmd_lostfound(args):
             if link not in media_urls:
                 media_urls.append(link)
 
-        print(f"\n{C_BOLD}{C_GREEN}🔍 失物招领详情 {C_RESET}")
+        print(f"\n{C_BOLD}{C_GREEN}失物招领详情 {C_RESET}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
         print(f"{C_BOLD}物品主题：{C_RESET} {C_YELLOW}{title}{C_RESET}")
         print(f"{C_BOLD}登记来源：{C_RESET} {C_CYAN}{reporter}{C_RESET}    |    {C_BOLD}时间：{C_RESET} {C_GREY}{pub_time}{C_RESET}")
@@ -1170,7 +1194,7 @@ def cmd_lostfound(args):
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
         
         if media_urls:
-            print(f"{C_BOLD}📎 关联文件或多媒体：{C_RESET}")
+            print(f"{C_BOLD}关联文件或多媒体：{C_RESET}")
             for i, m_url in enumerate(media_urls):
                 print(f"  [{i+1}] {C_CYAN}{m_url}{C_RESET}")
             print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
@@ -1212,7 +1236,7 @@ def cmd_lostfound(args):
         log_warn("没有找到任何失物招领记录。")
         return
         
-    print(f"\n{C_BOLD}{C_GREEN}🔍 全校失物招领列表 (第 {page} 页) ==={C_RESET}")
+    print(f"\n{C_BOLD}{C_GREEN}全校失物招领列表 (第 {page} 页) ==={C_RESET}")
     for row in rows:
         lf_id, category, title, reporter, start_date, status_text = row
         cat_color = C_YELLOW if "丢" in category else C_GREEN
@@ -1272,7 +1296,270 @@ def check_login_status():
 def cmd_status(args):
     check_login_status()
 
+class DummyArgs:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+def get_key_win():
+    import msvcrt
+    ch = msvcrt.getch()
+    if ch in (b'\x00', b'\xe0'):
+        ch2 = msvcrt.getch()
+        if ch2 == b'H': return 'up'
+        if ch2 == b'P': return 'down'
+        if ch2 == b'K': return 'left'
+        if ch2 == b'M': return 'right'
+    if ch == b'\r':
+        return 'enter'
+    if ch == b'\x1b':
+        return 'esc'
+    try:
+        return ch.decode('utf-8')
+    except:
+        return ''
+
+def get_key_unix():
+    import tty
+    import termios
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = os.read(fd, 8)
+        if ch == b'\x1b[A':
+            return 'up'
+        elif ch == b'\x1b[B':
+            return 'down'
+        elif ch == b'\x1b[C':
+            return 'right'
+        elif ch == b'\x1b[D':
+            return 'left'
+        elif ch == b'\x1b':
+            return 'esc'
+        elif ch in (b'\r', b'\n'):
+            return 'enter'
+        try:
+            return ch.decode('utf-8')
+        except:
+            return ''
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+def getkey():
+    if os.name == 'nt':
+        try:
+            return get_key_win()
+        except:
+            pass
+    else:
+        try:
+            return get_key_unix()
+        except:
+            pass
+    val = input().strip()
+    if val == '': return 'enter'
+    return val
+
+def handle_tui_action(choice):
+    print("\n" + "="*40)
+    try:
+        if choice == 0:  # 登录系统 (Import Cookie)
+            print("请输入从浏览器获取的 Cookie 字符串：")
+            cookie_str = input("Cookie > ").strip()
+            if cookie_str:
+                cmd_login(DummyArgs(cookie=cookie_str))
+        
+        elif choice == 1:  # 查询登录状态 (Check Status)
+            cmd_status(DummyArgs())
+            
+        elif choice == 2:  # 班级课表查询 (Class Schedule)
+            cmd_schedule(DummyArgs(grade=None, ch_class=None))
+            
+        elif choice == 3:  # 收件箱消息 (Inbox Messages)
+            print("请选择操作:")
+            print("  1. 查看收件箱消息列表")
+            print("  2. 查看指定消息详情与下载附件")
+            op = input("选择 (1-2) > ").strip()
+            if op == '1':
+                p_str = input("请输入页码 (回车默认为 1) > ").strip()
+                page = int(p_str) if p_str.isdigit() else 1
+                cmd_messages(DummyArgs(page=page, show=None, download=False, out="."))
+            elif op == '2':
+                m_str = input("请输入要查看的消息详情 ID > ").strip()
+                if m_str.isdigit():
+                    dl = input("是否下载该消息包含的所有附件？(y/N) > ").strip().lower() == 'y'
+                    out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
+                    cmd_messages(DummyArgs(page=1, show=int(m_str), download=dl, out=out_dir))
+                    
+        elif choice == 4:  # 纪律卫生考评 (Hygiene Appraisals)
+            print("请选择操作:")
+            print("  1. 查看纪律卫生考评记录列表")
+            print("  2. 查看指定考评记录详情与多媒体")
+            op = input("选择 (1-2) > ").strip()
+            if op == '1':
+                p_str = input("请输入页码 (回车默认为 1) > ").strip()
+                page = int(p_str) if p_str.isdigit() else 1
+                cmd_hygiene(DummyArgs(page=page, show=None, download=False, out="."))
+            elif op == '2':
+                m_str = input("请输入要查看的考评记录 ID > ").strip()
+                if m_str.isdigit():
+                    dl = input("是否下载该考评关联的多媒体附件？(y/N) > ").strip().lower() == 'y'
+                    out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
+                    cmd_hygiene(DummyArgs(page=1, show=int(m_str), download=dl, out=out_dir))
+                    
+        elif choice == 5:  # 教师值周安排 (Teacher Duty)
+            print("请选择操作:")
+            print("  1. 查看当前值周安排")
+            print("  2. 查看整学期值周总表")
+            print("  3. 模糊搜索指定值周教师或班级")
+            op = input("选择 (1-3) > ").strip()
+            if op == '1':
+                cmd_duty(DummyArgs(search=None, all=False))
+            elif op == '2':
+                cmd_duty(DummyArgs(search=None, all=True))
+            elif op == '3':
+                q = input("请输入要搜索的教师姓名或班级名称 > ").strip()
+                if q:
+                    cmd_duty(DummyArgs(search=q, all=False))
+                    
+        elif choice == 6:  # 校内文章资讯 (Campus News)
+            print("请选择要查询的文章栏目:")
+            print("  1. 通知公告 (announcement)")
+            print("  2. 新闻聚焦 (news)")
+            print("  3. 校内公示 (notice)")
+            print("  4. 值周小结 (duty)")
+            col_choice = input("选择 (1-4) > ").strip()
+            col_map = {'1': 'announcement', '2': 'news', '3': 'notice', '4': 'duty'}
+            col = col_map.get(col_choice)
+            if col:
+                print("\n请选择操作:")
+                print("  1. 查看栏目文章列表")
+                print("  2. 查看指定文章正文")
+                op = input("选择 (1-2) > ").strip()
+                if op == '1':
+                    p_str = input("请输入页码 (回车默认为 1) > ").strip()
+                    page = int(p_str) if p_str.isdigit() else 1
+                    cmd_news(DummyArgs(column=col, page=page, show=None, download=False, out="."))
+                elif op == '2':
+                    m_str = input("请输入要查看的文章 ID > ").strip()
+                    if m_str.isdigit():
+                        dl = input("是否下载文章附件？(y/N) > ").strip().lower() == 'y'
+                        out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
+                        cmd_news(DummyArgs(column=col, page=1, show=int(m_str), download=dl, out=out_dir))
+                        
+        elif choice == 7:  # 寝室查询与扣分 (Dormitory Info)
+            print("请选择操作:")
+            print("  1. 查询指定班级的寝室分配")
+            print("  2. 查询指定楼宇寝室考评扣分表")
+            op = input("选择 (1-2) > ").strip()
+            if op == '1':
+                g_str = input("请输入年级 (1=高一, 2=高二, 3=高三) > ").strip()
+                if g_str in ('1', '2', '3'):
+                    c_str = input("请输入班级名字或数字 (如: 1 或 1班) > ").strip()
+                    if c_str:
+                        cmd_bedroom(DummyArgs(action="class", grade=int(g_str), ch_class=c_str))
+            elif op == '2':
+                dorm = input("请输入宿舍楼宇名称或ID (如 1 或 3号楼) > ").strip()
+                if dorm:
+                    start = input("请输入开始日期 (格式 YYYY-MM-DD，回车默认为30天前) > ").strip() or None
+                    end = input("请输入结束日期 (格式 YYYY-MM-DD，回车默认为今天) > ").strip() or None
+                    all_flag = input("是否显示该楼宇全部宿舍（包括未扣分的）？(y/N) > ").strip().lower() == 'y'
+                    cmd_bedroom(DummyArgs(action="hygiene", dorm=dorm, start=start, end=end, all=all_flag))
+                    
+        elif choice == 8:  # 校园失物招领 (Lost & Found)
+            print("请选择操作:")
+            print("  1. 查看全校失物招领列表")
+            print("  2. 查看指定失物招领详情")
+            op = input("选择 (1-2) > ").strip()
+            if op == '1':
+                p_str = input("请输入页码 (回车默认为 1) > ").strip()
+                page = int(p_str) if p_str.isdigit() else 1
+                cmd_lostfound(DummyArgs(page=page, show=None, download=False, out="."))
+            elif op == '2':
+                m_str = input("请输入要查看的详情 ID > ").strip()
+                if m_str.isdigit():
+                    dl = input("是否下载关联的图片多媒体附件？(y/N) > ").strip().lower() == 'y'
+                    out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
+                    cmd_lostfound(DummyArgs(page=1, show=int(m_str), download=dl, out=out_dir))
+                    
+        elif choice == 9:  # 文件寄存与提取 (File Station)
+            print("请选择操作:")
+            print("  1. 上传本地文件")
+            print("  2. 提取远端文件")
+            op = input("选择 (1-2) > ").strip()
+            if op == '1':
+                path = input("请输入本地文件路径 > ").strip()
+                if path:
+                    cmd_file_upload(path)
+            elif op == '2':
+                pwd = input("请输入 6 位提取码 > ").strip()
+                if pwd:
+                    out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
+                    cmd_file_download(pwd, out_dir)
+    except Exception as e:
+        log_error(f"TUI 操作执行出错: {e}")
+    
+    print("\n按任意键返回主菜单...")
+    getkey()
+
+def run_tui():
+    main_file = os.path.basename(sys.argv[0])
+    if main_file.endswith('.py'):
+        cmd_prefix = f"python3 {main_file}"
+    else:
+        cmd_prefix = main_file
+
+    options = [
+        ("登录系统 (Import Cookie)", f"{cmd_prefix} login"),
+        ("查询登录状态 (Check Status)", f"{cmd_prefix} status"),
+        ("班级课表查询 (Class Schedule)", f"{cmd_prefix} schedule"),
+        ("收件箱消息 (Inbox Messages)", f"{cmd_prefix} messages"),
+        ("纪律卫生考评 (Hygiene Appraisals)", f"{cmd_prefix} hygiene"),
+        ("教师值周安排 (Teacher Duty)", f"{cmd_prefix} duty"),
+        ("校内文章资讯 (Campus News)", f"{cmd_prefix} news"),
+        ("寝室查询与扣分 (Dormitory Info)", f"{cmd_prefix} bedroom"),
+        ("校园失物招领 (Lost & Found)", f"{cmd_prefix} lostfound"),
+        ("文件寄存与提取 (File Station)", f"{cmd_prefix} file"),
+        ("退出程序 (Exit)", "")
+    ]
+    
+    selected_idx = 0
+    while True:
+        # 清屏
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(f"{C_BOLD}{C_CYAN}=== 春晖中学校园网 CLI/TUI 工具 ==={C_RESET}")
+        print("使用 [↑/↓] 键移动光标，[Enter] 键确认选择，也可以输入 1-9 直接跳转\n")
+        
+        for idx, (option, cmd) in enumerate(options):
+            cmd_desc = f" [{cmd}]" if cmd else ""
+            if idx == selected_idx:
+                print(f"{C_GREEN}{C_BOLD}  > {option:<36}{C_GREY}{cmd_desc}{C_RESET}")
+            else:
+                print(f"    {option:<36}{C_GREY}{cmd_desc}{C_RESET}")
+                
+        key = getkey()
+        if key == 'up':
+            selected_idx = (selected_idx - 1) % len(options)
+        elif key == 'down':
+            selected_idx = (selected_idx + 1) % len(options)
+        elif key == 'enter':
+            if selected_idx == len(options) - 1:
+                break
+            else:
+                handle_tui_action(selected_idx)
+        elif key.isdigit():
+            val = int(key)
+            if 1 <= val <= 9:
+                selected_idx = val - 1
+                handle_tui_action(selected_idx)
+        elif key == 'q' or key == 'esc':
+            break
+
 def main():
+    if len(sys.argv) == 1:
+        run_tui()
+        sys.exit(0)
     for idx, arg in enumerate(sys.argv):
         if arg == "?":
             sys.argv[idx] = "-h"
@@ -1359,6 +1646,13 @@ def main():
     parser_lf.add_argument("--out", type=str, default=".", help="指定文件的下载保存目录")
 
     args = parser.parse_args()
+
+    if args.command == "bedroom" and not getattr(args, "action", None):
+        parser_bed.print_help()
+        sys.exit(0)
+    elif args.command == "file" and not getattr(args, "action", None):
+        parser_file.print_help()
+        sys.exit(0)
 
     if args.command == "login":
         cmd_login(args)

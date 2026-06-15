@@ -80,13 +80,13 @@ class App(ctk.CTk):
         # 导航按钮定义
         self.nav_buttons = {}
         menu_items = [
-            ("messages", "✉  个人收件箱", 2),
-            ("news", "📄  校内资讯公告", 3),
-            ("hygiene", "🧹  纪律卫生考评", 4),
-            ("bedroom", "🏠  寝室分配考评", 5),
-            ("duty", "📅  教师值周排班", 6),
-            ("lostfound", "🔍  全校失物招领", 7),
-            ("file", "📁  学校文件寄取", 8)
+            ("messages", "个人收件箱", 2),
+            ("news", "校内资讯公告", 3),
+            ("hygiene", "纪律卫生考评", 4),
+            ("bedroom", "寝室分配考评", 5),
+            ("duty", "教师值周排班", 6),
+            ("lostfound", "全校失物招领", 7),
+            ("file", "学校文件寄取", 8)
         ]
 
         for code, label, row_idx in menu_items:
@@ -118,7 +118,7 @@ class App(ctk.CTk):
 
         self.login_btn = ctk.CTkButton(
             self.status_frame, 
-            text="🔑 导入 Cookie 登录", 
+            text="导入 Cookie 登录", 
             height=30,
             font=ctk.CTkFont(size=12),
             command=self.open_login_dialog
@@ -213,7 +213,7 @@ class CookieLoginDialog(ctk.CTkToplevel):
 
         self.grid_columnconfigure(0, weight=1)
         
-        title = ctk.CTkLabel(self, text="🔑 导入浏览器 Cookie 会话", font=ctk.CTkFont(size=18, weight="bold"))
+        title = ctk.CTkLabel(self, text="导入浏览器 Cookie 会话", font=ctk.CTkFont(size=18, weight="bold"))
         title.grid(row=0, column=0, padx=20, pady=(20, 5), sticky="w")
 
         desc = ctk.CTkLabel(
@@ -306,19 +306,19 @@ class MessagesFrame(ctk.CTkFrame):
         self.header = ctk.CTkFrame(self, fg_color="transparent")
         self.header.pack(fill="x", pady=(5, 10))
         
-        self.title = ctk.CTkLabel(self.header, text="✉ 个人收件箱通知列表", font=ctk.CTkFont(size=18, weight="bold"))
+        self.title = ctk.CTkLabel(self.header, text="个人收件箱通知列表", font=ctk.CTkFont(size=18, weight="bold"))
         self.title.pack(side="left", padx=5)
 
-        self.refresh_btn = ctk.CTkButton(self.header, text="🔄 刷新列表", width=100, command=self.load_list)
+        self.refresh_btn = ctk.CTkButton(self.header, text="刷新列表", width=100, command=self.load_list)
         self.refresh_btn.pack(side="right", padx=5)
 
-        self.prev_btn = ctk.CTkButton(self.header, text="◀ 上一页", width=80, command=lambda: self.change_page(-1))
+        self.prev_btn = ctk.CTkButton(self.header, text="< 上一页", width=80, command=lambda: self.change_page(-1))
         self.prev_btn.pack(side="right", padx=5)
         
         self.page_label = ctk.CTkLabel(self.header, text="第 1 页", font=ctk.CTkFont(size=13))
         self.page_label.pack(side="right", padx=10)
 
-        self.next_btn = ctk.CTkButton(self.header, text="下一页 ▶", width=80, command=lambda: self.change_page(1))
+        self.next_btn = ctk.CTkButton(self.header, text="下一页 >", width=80, command=lambda: self.change_page(1))
         self.next_btn.pack(side="right", padx=5)
 
         # 列表滑动容器
@@ -377,7 +377,7 @@ class MessagesFrame(ctk.CTkFrame):
             return True, rows
 
         def callback(res):
-            self.refresh_btn.configure(state="normal", text="🔄 刷新列表")
+            self.refresh_btn.configure(state="normal", text="刷新列表")
             self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
             self.next_btn.configure(state="normal")
             for child in self.scroll.winfo_children():
@@ -455,10 +455,10 @@ class MessageDetailWindow(ctk.CTkToplevel):
         self.attachment_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(5, 15))
         self.attachment_frame.columnconfigure(0, weight=1)
         
-        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="📎 附件加载中...", text_color="grey60", font=ctk.CTkFont(size=12))
+        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="附件加载中...", text_color="grey60", font=ctk.CTkFont(size=12))
         self.att_lbl.grid(row=0, column=0, padx=15, pady=10, sticky="w")
 
-        self.download_btn = ctk.CTkButton(self.attachment_frame, text="📥 下载全部附件", state="disabled", width=120, command=self.download_all)
+        self.download_btn = ctk.CTkButton(self.attachment_frame, text="下载全部附件", state="disabled", width=120, command=self.download_all)
         self.download_btn.grid(row=0, column=1, padx=15, pady=10)
 
         self.attachment_links = []
@@ -509,7 +509,7 @@ class MessageDetailWindow(ctk.CTkToplevel):
             if not success:
                 self.title_lbl.configure(text="加载失败")
                 self.textbox.insert("0.0", data)
-                self.att_lbl.configure(text="📎 无法加载附件列表")
+                self.att_lbl.configure(text="无法加载附件列表")
                 return
                 
             title, sender, send_time, content, links = data
@@ -519,10 +519,10 @@ class MessageDetailWindow(ctk.CTkToplevel):
             
             self.attachment_links = links
             if links:
-                self.att_lbl.configure(text=f"📎 发现 {len(links)} 个关联的文档或附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
+                self.att_lbl.configure(text=f"发现 {len(links)} 个关联的文档或附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
                 self.download_btn.configure(state="normal")
             else:
-                self.att_lbl.configure(text="📎 本条消息未附带任何附件")
+                self.att_lbl.configure(text="本条消息未附带任何附件")
 
         self.parent.run_async(worker, callback=callback)
 
@@ -543,7 +543,7 @@ class MessageDetailWindow(ctk.CTkToplevel):
         def callback(res):
             if not self.winfo_exists():
                 return
-            self.download_btn.configure(state="normal", text="📥 下载全部附件")
+            self.download_btn.configure(state="normal", text="下载全部附件")
             messagebox.showinfo("成功", f"所有附件已下载并成功保存至:\n{out_dir}")
 
         self.parent.run_async(task, callback=callback)
@@ -559,7 +559,7 @@ class NewsFrame(ctk.CTkFrame):
         self.header = ctk.CTkFrame(self, fg_color="transparent")
         self.header.pack(fill="x", pady=(5, 10))
 
-        self.title = ctk.CTkLabel(self.header, text="📄 校内文章公告栏目", font=ctk.CTkFont(size=18, weight="bold"))
+        self.title = ctk.CTkLabel(self.header, text="校内文章公告栏目", font=ctk.CTkFont(size=18, weight="bold"))
         self.title.pack(side="left", padx=5)
 
         # 栏目下拉选择菜单
@@ -577,16 +577,16 @@ class NewsFrame(ctk.CTkFrame):
         )
         self.col_select.pack(side="left", padx=15)
 
-        self.refresh_btn = ctk.CTkButton(self.header, text="🔄 刷新", width=80, command=self.load_list)
+        self.refresh_btn = ctk.CTkButton(self.header, text="刷新", width=80, command=self.load_list)
         self.refresh_btn.pack(side="right", padx=5)
 
-        self.prev_btn = ctk.CTkButton(self.header, text="◀ 上一页", width=80, command=lambda: self.change_page(-1))
+        self.prev_btn = ctk.CTkButton(self.header, text="< 上一页", width=80, command=lambda: self.change_page(-1))
         self.prev_btn.pack(side="right", padx=5)
         
         self.page_label = ctk.CTkLabel(self.header, text="第 1 页", font=ctk.CTkFont(size=13))
         self.page_label.pack(side="right", padx=10)
 
-        self.next_btn = ctk.CTkButton(self.header, text="下一页 ▶", width=80, command=lambda: self.change_page(1))
+        self.next_btn = ctk.CTkButton(self.header, text="下一页 >", width=80, command=lambda: self.change_page(1))
         self.next_btn.pack(side="right", padx=5)
 
         self.scroll = ctk.CTkScrollableFrame(self)
@@ -637,7 +637,7 @@ class NewsFrame(ctk.CTkFrame):
             return True, rows
 
         def callback(res):
-            self.refresh_btn.configure(state="normal", text="🔄 刷新")
+            self.refresh_btn.configure(state="normal", text="刷新")
             self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
             self.next_btn.configure(state="normal")
             for child in self.scroll.winfo_children():
@@ -710,10 +710,10 @@ class NewsDetailWindow(ctk.CTkToplevel):
         self.attachment_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(5, 15))
         self.attachment_frame.columnconfigure(0, weight=1)
         
-        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="📎 正在提取内嵌附件...", text_color="grey60", font=ctk.CTkFont(size=12))
+        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="正在提取内嵌附件...", text_color="grey60", font=ctk.CTkFont(size=12))
         self.att_lbl.grid(row=0, column=0, padx=15, pady=10, sticky="w")
 
-        self.download_btn = ctk.CTkButton(self.attachment_frame, text="📥 下载关联文件", state="disabled", width=120, command=self.download_all)
+        self.download_btn = ctk.CTkButton(self.attachment_frame, text="下载关联文件", state="disabled", width=120, command=self.download_all)
         self.download_btn.grid(row=0, column=1, padx=15, pady=10)
 
         self.attachment_links = []
@@ -757,7 +757,7 @@ class NewsDetailWindow(ctk.CTkToplevel):
             if not success:
                 self.title_lbl.configure(text="读取失败")
                 self.textbox.insert("0.0", data)
-                self.att_lbl.configure(text="📎 无法加载附件")
+                self.att_lbl.configure(text="无法加载附件")
                 return
                 
             title, source, pub_time, content, links = data
@@ -767,10 +767,10 @@ class NewsDetailWindow(ctk.CTkToplevel):
             
             self.attachment_links = links
             if links:
-                self.att_lbl.configure(text=f"📎 发现该公告内嵌了 {len(links)} 个可供下载的文件附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
+                self.att_lbl.configure(text=f"发现该公告内嵌了 {len(links)} 个可供下载的文件附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
                 self.download_btn.configure(state="normal")
             else:
-                self.att_lbl.configure(text="📎 本篇文章未检测到独立文件附件")
+                self.att_lbl.configure(text="本篇文章未检测到独立文件附件")
 
         self.parent.run_async(worker, callback=callback)
 
@@ -790,7 +790,7 @@ class NewsDetailWindow(ctk.CTkToplevel):
         def callback(res):
             if not self.winfo_exists():
                 return
-            self.download_btn.configure(state="normal", text="📥 下载关联文件")
+            self.download_btn.configure(state="normal", text="下载关联文件")
             messagebox.showinfo("成功", f"文件附件下载成功，已保存至:\n{out_dir}")
 
         self.parent.run_async(task, callback=callback)
@@ -806,19 +806,19 @@ class HygieneFrame(ctk.CTkFrame):
         self.header = ctk.CTkFrame(self, fg_color="transparent")
         self.header.pack(fill="x", pady=(5, 10))
 
-        self.title = ctk.CTkLabel(self.header, text="🧹 全校纪律卫生考评记录", font=ctk.CTkFont(size=18, weight="bold"))
+        self.title = ctk.CTkLabel(self.header, text="全校纪律卫生考评记录", font=ctk.CTkFont(size=18, weight="bold"))
         self.title.pack(side="left", padx=5)
 
-        self.refresh_btn = ctk.CTkButton(self.header, text="🔄 刷新", width=80, command=self.load_list)
+        self.refresh_btn = ctk.CTkButton(self.header, text="刷新", width=80, command=self.load_list)
         self.refresh_btn.pack(side="right", padx=5)
 
-        self.prev_btn = ctk.CTkButton(self.header, text="◀ 上一页", width=80, command=lambda: self.change_page(-1))
+        self.prev_btn = ctk.CTkButton(self.header, text="< 上一页", width=80, command=lambda: self.change_page(-1))
         self.prev_btn.pack(side="right", padx=5)
         
         self.page_label = ctk.CTkLabel(self.header, text="第 1 页", font=ctk.CTkFont(size=13))
         self.page_label.pack(side="right", padx=10)
 
-        self.next_btn = ctk.CTkButton(self.header, text="下一页 ▶", width=80, command=lambda: self.change_page(1))
+        self.next_btn = ctk.CTkButton(self.header, text="下一页 >", width=80, command=lambda: self.change_page(1))
         self.next_btn.pack(side="right", padx=5)
 
         self.scroll = ctk.CTkScrollableFrame(self)
@@ -871,7 +871,7 @@ class HygieneFrame(ctk.CTkFrame):
             return True, rows
 
         def callback(res):
-            self.refresh_btn.configure(state="normal", text="🔄 刷新")
+            self.refresh_btn.configure(state="normal", text="刷新")
             self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
             self.next_btn.configure(state="normal")
             for child in self.scroll.winfo_children():
@@ -949,7 +949,7 @@ class HygieneDetailWindow(ctk.CTkToplevel):
         self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="📷 正在获取现场图片/视频...", text_color="grey60", font=ctk.CTkFont(size=12))
         self.att_lbl.grid(row=0, column=0, padx=15, pady=10, sticky="w")
 
-        self.download_btn = ctk.CTkButton(self.attachment_frame, text="📥 下载现场照片", state="disabled", width=120, command=self.download_all)
+        self.download_btn = ctk.CTkButton(self.attachment_frame, text="下载现场照片", state="disabled", width=120, command=self.download_all)
         self.download_btn.grid(row=0, column=1, padx=15, pady=10)
 
         self.media_urls = []
@@ -1039,7 +1039,7 @@ class HygieneDetailWindow(ctk.CTkToplevel):
         def callback(res):
             if not self.winfo_exists():
                 return
-            self.download_btn.configure(state="normal", text="📥 下载现场照片")
+            self.download_btn.configure(state="normal", text="下载现场照片")
             messagebox.showinfo("成功", f"照片已下载并成功保存至:\n{out_dir}")
 
         self.parent.run_async(task, callback=callback)
@@ -1054,7 +1054,7 @@ class BedroomFrame(ctk.CTkFrame):
         self.header = ctk.CTkFrame(self, fg_color="transparent")
         self.header.pack(fill="x", pady=(5, 10))
 
-        self.title = ctk.CTkLabel(self.header, text="🏠 寝室分配与楼宇卫生扣分考评", font=ctk.CTkFont(size=18, weight="bold"))
+        self.title = ctk.CTkLabel(self.header, text="寝室分配与楼宇卫生扣分考评", font=ctk.CTkFont(size=18, weight="bold"))
         self.title.pack(side="left", padx=5)
 
         # Tab 选项卡分流
@@ -1083,7 +1083,7 @@ class BedroomFrame(ctk.CTkFrame):
         self.cls_entry = ctk.CTkEntry(self.tab_class, placeholder_text="如: 10班 或 10", width=120)
         self.cls_entry.grid(row=0, column=3, padx=5, pady=15, sticky="w")
 
-        self.query_cls_btn = ctk.CTkButton(self.tab_class, text="🔍 查询寝室分配", width=130, command=self.query_class_bedroom)
+        self.query_cls_btn = ctk.CTkButton(self.tab_class, text="查询寝室分配", width=130, command=self.query_class_bedroom)
         self.query_cls_btn.grid(row=0, column=4, padx=15, pady=15, sticky="e")
 
         self.cls_result = ctk.CTkTextbox(self.tab_class, font=ctk.CTkFont(size=14))
@@ -1114,7 +1114,7 @@ class BedroomFrame(ctk.CTkFrame):
         self.show_all_cb = ctk.CTkCheckBox(self.tab_hygiene, text="显示无扣分寝室", variable=self.show_all_var)
         self.show_all_cb.grid(row=0, column=4, padx=10, pady=10, sticky="w")
 
-        self.query_hyg_btn = ctk.CTkButton(self.tab_hygiene, text="🔍 查询卫生扣分", width=120, command=self.query_dorm_hygiene)
+        self.query_hyg_btn = ctk.CTkButton(self.tab_hygiene, text="查询卫生扣分", width=120, command=self.query_dorm_hygiene)
         self.query_hyg_btn.grid(row=0, column=5, padx=10, pady=10, sticky="e")
 
         self.hyg_scroll = ctk.CTkScrollableFrame(self.tab_hygiene)
@@ -1155,7 +1155,7 @@ class BedroomFrame(ctk.CTkFrame):
             return False, "未查到该班级的寝室分配数据。"
 
         def callback(res):
-            self.query_cls_btn.configure(state="normal", text="🔍 查询寝室分配")
+            self.query_cls_btn.configure(state="normal", text="查询寝室分配")
             success, val = res
             if not success:
                 self.cls_result.insert("0.0", f"查询失败: {val}")
@@ -1218,7 +1218,7 @@ class BedroomFrame(ctk.CTkFrame):
             return True, rows
 
         def callback(res):
-            self.query_hyg_btn.configure(state="normal", text="🔍 查询卫生扣分")
+            self.query_hyg_btn.configure(state="normal", text="查询卫生扣分")
             for child in self.hyg_scroll.winfo_children():
                 child.destroy()
                 
@@ -1240,7 +1240,7 @@ class BedroomFrame(ctk.CTkFrame):
                 
                 card.columnconfigure(0, weight=1)
                 
-                title_lbl = tk.Label(card, text=f"🏠 寝室: {room}   ({cls_name})", font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
+                title_lbl = tk.Label(card, text=f"寝室: {room}   ({cls_name})", font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
                 title_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
                 
                 score_color = "#ff5722" if total != "0" else colors["text_secondary"]
@@ -1266,7 +1266,7 @@ class DutyFrame(ctk.CTkFrame):
         self.header = ctk.CTkFrame(self, fg_color="transparent")
         self.header.pack(fill="x", pady=(5, 10))
 
-        self.title = ctk.CTkLabel(self.header, text="📅 校园教师值周排班安排", font=ctk.CTkFont(size=18, weight="bold"))
+        self.title = ctk.CTkLabel(self.header, text="校园教师值周排班安排", font=ctk.CTkFont(size=18, weight="bold"))
         self.title.pack(side="left", padx=5)
 
         self.tabview = ctk.CTkTabview(self)
@@ -1291,7 +1291,7 @@ class DutyFrame(ctk.CTkFrame):
         self.current_scroll.grid(row=0, column=0, sticky="nsew", padx=15, pady=15)
         self.tab_current.rowconfigure(0, weight=1)
 
-        self.refresh_cur_btn = ctk.CTkButton(self.tab_current, text="🔄 刷新值周安排", command=self.load_current_duty)
+        self.refresh_cur_btn = ctk.CTkButton(self.tab_current, text="刷新值周安排", command=self.load_current_duty)
         self.refresh_cur_btn.grid(row=1, column=0, pady=(0, 15))
 
     def init_all_tab(self):
@@ -1305,7 +1305,7 @@ class DutyFrame(ctk.CTkFrame):
         self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="输入教师名字或值周班级（如: 创新01班）模糊搜索")
         self.search_entry.grid(row=0, column=0, padx=(0, 10), sticky="ew")
 
-        self.search_btn = ctk.CTkButton(search_frame, text="🔍 搜索", width=90, command=self.search_duty)
+        self.search_btn = ctk.CTkButton(search_frame, text="搜索", width=90, command=self.search_duty)
         self.search_btn.grid(row=0, column=1)
 
         self.all_scroll = ctk.CTkScrollableFrame(self.tab_all)
@@ -1424,7 +1424,7 @@ class DutyFrame(ctk.CTkFrame):
             
             card.columnconfigure(0, weight=1)
             
-            title_text = f"📅 {d['week']}"
+            title_text = d['week']
             if d["is_current"]:
                 title_text += "  [当前值周]"
                 
@@ -1469,19 +1469,19 @@ class LostFoundFrame(ctk.CTkFrame):
         self.header = ctk.CTkFrame(self, fg_color="transparent")
         self.header.pack(fill="x", pady=(5, 10))
 
-        self.title = ctk.CTkLabel(self.header, text="🔍 全校失物招领登记", font=ctk.CTkFont(size=18, weight="bold"))
+        self.title = ctk.CTkLabel(self.header, text="全校失物招领登记", font=ctk.CTkFont(size=18, weight="bold"))
         self.title.pack(side="left", padx=5)
 
-        self.refresh_btn = ctk.CTkButton(self.header, text="🔄 刷新", width=80, command=self.load_list)
+        self.refresh_btn = ctk.CTkButton(self.header, text="刷新", width=80, command=self.load_list)
         self.refresh_btn.pack(side="right", padx=5)
 
-        self.prev_btn = ctk.CTkButton(self.header, text="◀ 上一页", width=80, command=lambda: self.change_page(-1))
+        self.prev_btn = ctk.CTkButton(self.header, text="< 上一页", width=80, command=lambda: self.change_page(-1))
         self.prev_btn.pack(side="right", padx=5)
         
         self.page_label = ctk.CTkLabel(self.header, text="第 1 页", font=ctk.CTkFont(size=13))
         self.page_label.pack(side="right", padx=10)
 
-        self.next_btn = ctk.CTkButton(self.header, text="下一页 ▶", width=80, command=lambda: self.change_page(1))
+        self.next_btn = ctk.CTkButton(self.header, text="下一页 >", width=80, command=lambda: self.change_page(1))
         self.next_btn.pack(side="right", padx=5)
 
         self.scroll = ctk.CTkScrollableFrame(self)
@@ -1538,7 +1538,7 @@ class LostFoundFrame(ctk.CTkFrame):
             return True, rows
 
         def callback(res):
-            self.refresh_btn.configure(state="normal", text="🔄 刷新")
+            self.refresh_btn.configure(state="normal", text="刷新")
             self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
             self.next_btn.configure(state="normal")
             for child in self.scroll.winfo_children():
@@ -1617,10 +1617,10 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
         self.attachment_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(5, 15))
         self.attachment_frame.columnconfigure(0, weight=1)
         
-        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="📎 正在提取关联附件...", text_color="grey60", font=ctk.CTkFont(size=12))
+        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="正在提取关联附件...", text_color="grey60", font=ctk.CTkFont(size=12))
         self.att_lbl.grid(row=0, column=0, padx=15, pady=10, sticky="w")
 
-        self.download_btn = ctk.CTkButton(self.attachment_frame, text="📥 下载全部文件", state="disabled", width=120, command=self.download_all)
+        self.download_btn = ctk.CTkButton(self.attachment_frame, text="下载全部文件", state="disabled", width=120, command=self.download_all)
         self.download_btn.grid(row=0, column=1, padx=15, pady=10)
 
         self.media_urls = []
@@ -1689,20 +1689,20 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
             if not success:
                 self.title_lbl.configure(text="加载详情失败")
                 self.textbox.insert("0.0", data)
-                self.att_lbl.configure(text="📎 无法加载招领配图/附件")
+                self.att_lbl.configure(text="无法加载招领配图/附件")
                 return
                 
             title, reporter, reviewer, pub_time, content, media_urls = data
-            self.title_lbl.configure(text=f"🔍 物品招领：{title}")
+            self.title_lbl.configure(text=f"物品招领：{title}")
             self.info_lbl.configure(text=f"登记处: {reporter}   |   审核人: {reviewer}   |   时间: {pub_time}")
             self.textbox.insert("0.0", content)
             
             self.media_urls = media_urls
             if media_urls:
-                self.att_lbl.configure(text=f"📎 发现该失物招领关联了 {len(media_urls)} 个多媒体文件或附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
+                self.att_lbl.configure(text=f"发现该失物招领关联了 {len(media_urls)} 个多媒体文件或附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
                 self.download_btn.configure(state="normal")
             else:
-                self.att_lbl.configure(text="📎 本招领未检测到多媒体附件或关联文件")
+                self.att_lbl.configure(text="本招领未检测到多媒体附件或关联文件")
 
         self.parent.run_async(worker, callback=callback)
 
@@ -1722,7 +1722,7 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
         def callback(res):
             if not self.winfo_exists():
                 return
-            self.download_btn.configure(state="normal", text="📥 下载全部文件")
+            self.download_btn.configure(state="normal", text="下载全部文件")
             messagebox.showinfo("成功", f"文件附件下载成功，已保存至:\n{out_dir}")
 
         self.parent.run_async(task, callback=callback)
@@ -1736,7 +1736,7 @@ class FileFrame(ctk.CTkFrame):
         self.header = ctk.CTkFrame(self, fg_color="transparent")
         self.header.pack(fill="x", pady=(5, 10))
 
-        self.title = ctk.CTkLabel(self.header, text="📁 学校文件临时寄存与安全寄取提取", font=ctk.CTkFont(size=18, weight="bold"))
+        self.title = ctk.CTkLabel(self.header, text="学校文件临时寄存与安全寄取提取", font=ctk.CTkFont(size=18, weight="bold"))
         self.title.pack(side="left", padx=5)
 
         # 左右双分流面板
@@ -1754,7 +1754,7 @@ class FileFrame(ctk.CTkFrame):
         self.upload_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=10)
         self.upload_panel.columnconfigure(0, weight=1)
 
-        lbl = ctk.CTkLabel(self.upload_panel, text="📤 寄存文件上传", font=ctk.CTkFont(size=15, weight="bold"))
+        lbl = ctk.CTkLabel(self.upload_panel, text="寄存文件上传", font=ctk.CTkFont(size=15, weight="bold"))
         lbl.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w")
 
         desc = ctk.CTkLabel(self.upload_panel, text="选择本地任意文件，客户端将自动执行\n50MB 大小逻辑分片上传，合并后生成六位提取密码。", text_color="grey60", font=ctk.CTkFont(size=12), justify="left")
@@ -1764,7 +1764,7 @@ class FileFrame(ctk.CTkFrame):
         self.sel_file_lbl = ctk.CTkLabel(self.upload_panel, text="尚未选择任何文件", text_color="grey50", font=ctk.CTkFont(size=13))
         self.sel_file_lbl.grid(row=2, column=0, padx=15, pady=10, sticky="w")
 
-        self.choose_btn = ctk.CTkButton(self.upload_panel, text="📁 选择本地文件", command=self.choose_file)
+        self.choose_btn = ctk.CTkButton(self.upload_panel, text="选择本地文件", command=self.choose_file)
         self.choose_btn.grid(row=3, column=0, padx=15, pady=5, sticky="w")
 
         # 进度条
@@ -1775,7 +1775,7 @@ class FileFrame(ctk.CTkFrame):
         self.progress_lbl = ctk.CTkLabel(self.upload_panel, text="进度: 0%", font=ctk.CTkFont(size=12))
         self.progress_lbl.grid(row=4, column=0, padx=(270, 15), pady=15, sticky="w")
 
-        self.upload_btn = ctk.CTkButton(self.upload_panel, text="🚀 开始分片上传", state="disabled", command=self.start_upload)
+        self.upload_btn = ctk.CTkButton(self.upload_panel, text="开始分片上传", state="disabled", command=self.start_upload)
         self.upload_btn.grid(row=5, column=0, padx=15, pady=10, sticky="w")
 
         # 上传生成的密码显示
@@ -1797,7 +1797,7 @@ class FileFrame(ctk.CTkFrame):
         self.download_panel.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=10)
         self.download_panel.columnconfigure(0, weight=1)
 
-        lbl = ctk.CTkLabel(self.download_panel, text="📥 提取下载文件", font=ctk.CTkFont(size=15, weight="bold"))
+        lbl = ctk.CTkLabel(self.download_panel, text="提取下载文件", font=ctk.CTkFont(size=15, weight="bold"))
         lbl.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w")
 
         desc = ctk.CTkLabel(self.download_panel, text="输入发送方生成的六位数文件提取密码，\n即可高速下载合并好的寄存文件至本地指定位置。", text_color="grey60", font=ctk.CTkFont(size=12), justify="left")
@@ -1814,10 +1814,10 @@ class FileFrame(ctk.CTkFrame):
         self.dest_lbl = ctk.CTkLabel(self.download_panel, text="默认保存至: 系统下载目录/当前目录", text_color="grey50", font=ctk.CTkFont(size=12))
         self.dest_lbl.grid(row=4, column=0, padx=15, pady=10, sticky="w")
 
-        self.dest_btn = ctk.CTkButton(self.download_panel, text="📂 选择保存目录", command=self.choose_dest)
+        self.dest_btn = ctk.CTkButton(self.download_panel, text="选择保存目录", command=self.choose_dest)
         self.dest_btn.grid(row=5, column=0, padx=15, pady=5, sticky="w")
 
-        self.download_btn = ctk.CTkButton(self.download_panel, text="📥 提取拉取文件", command=self.start_download)
+        self.download_btn = ctk.CTkButton(self.download_panel, text="提取拉取文件", command=self.start_download)
         self.download_btn.grid(row=6, column=0, padx=15, pady=20, sticky="w")
 
         self.selected_dest_dir = "."
@@ -1915,7 +1915,7 @@ class FileFrame(ctk.CTkFrame):
             else:
                 self.update_progress(1.0, "进度: 100% (完成)")
                 self.generated_pwd = val
-                self.pwd_lbl.configure(text=f"🔑 提取密码：{val}")
+                self.pwd_lbl.configure(text=f"提取密码：{val}")
                 self.copy_btn.configure(state="normal")
                 messagebox.showinfo("成功", f"文件寄存并分片上传成功！\n文件提取密码为: {val}")
 
@@ -1978,7 +1978,7 @@ class FileFrame(ctk.CTkFrame):
                 return False, str(e)
 
         def callback(res):
-            self.download_btn.configure(state="normal", text="📥 提取拉取文件")
+            self.download_btn.configure(state="normal", text="提取拉取文件")
             success, val = res
             if not success:
                 messagebox.showerror("错误", f"提取寄存文件失败:\n{val}")
