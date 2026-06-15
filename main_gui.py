@@ -1757,7 +1757,7 @@ class FileFrame(ctk.CTkFrame):
         lbl = ctk.CTkLabel(self.upload_panel, text="寄存文件上传", font=ctk.CTkFont(size=15, weight="bold"))
         lbl.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w")
 
-        desc = ctk.CTkLabel(self.upload_panel, text="选择本地任意文件，客户端将自动执行\n50MB 大小逻辑分片上传，合并后生成六位提取密码。", text_color="grey60", font=ctk.CTkFont(size=12), justify="left")
+        desc = ctk.CTkLabel(self.upload_panel, text="选择本地任意文件，客户端将自动执行\n2MB 大小逻辑分片上传，合并后生成六位提取密码。", text_color="grey60", font=ctk.CTkFont(size=12), justify="left")
         desc.grid(row=1, column=0, padx=15, pady=5, sticky="w")
 
         # 选择文件展示
@@ -1848,8 +1848,8 @@ class FileFrame(ctk.CTkFrame):
         filename = os.path.basename(file_path)
         file_size = os.path.getsize(file_path)
         
-        # 50MB 逻辑分片
-        chunk_size = 50 * 1024 * 1024
+        # 2MB 逻辑分片
+        chunk_size = 2 * 1024 * 1024
         total_chunks = (file_size + chunk_size - 1) // chunk_size
         if total_chunks == 0:
             total_chunks = 1
