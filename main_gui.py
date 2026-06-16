@@ -22,6 +22,89 @@ import ch_cli
 ctk.set_appearance_mode("System")  # System, Dark, Light
 ctk.set_default_color_theme("blue")  # blue, green, dark-blue
 
+def display_markdown_in_textbox(widget, md_text):
+    widget.configure(state="normal")
+    widget.delete("0.0", "end")
+    
+    family = "Courier"
+    textbox_core = getattr(widget, "_textbox", widget)
+    
+    # 重新配置所有 Tag 属性
+    textbox_core.tag_config("h1", font=(family, 20, "bold"), foreground="#4caf50")
+    textbox_core.tag_config("h2", font=(family, 17, "bold"), foreground="#4caf50")
+    textbox_core.tag_config("h3", font=(family, 15, "bold"), foreground="#00adb5")
+    textbox_core.tag_config("h4", font=(family, 14, "bold"), foreground="#00adb5")
+    textbox_core.tag_config("bold", font=(family, 14, "bold"))
+    textbox_core.tag_config("link", font=(family, 14, "underline"), foreground="#00adb5")
+    textbox_core.tag_config("table_sep", font=(family, 14), foreground="#56b6c2")
+    textbox_core.tag_config("table_header", font=(family, 14, "bold"), foreground="#00adb5")
+    textbox_core.tag_config("img", font=(family, 14, "bold"), foreground="#d19a66")
+    
+    lines = md_text.split('\n')
+    is_table_header = True
+    
+    for line in lines:
+        if line.startswith('# '):
+            widget.insert("end", line[2:] + "\n", "h1")
+            continue
+        elif line.startswith('## '):
+            widget.insert("end", line[3:] + "\n", "h2")
+            continue
+        elif line.startswith('### '):
+            widget.insert("end", line[4:] + "\n", "h3")
+            continue
+        elif line.startswith('#### '):
+            widget.insert("end", line[5:] + "\n", "h4")
+            continue
+            
+        if '|' in line and '---' in line:
+            widget.insert("end", line + "\n", "table_sep")
+            is_table_header = False
+            continue
+            
+        if '|' in line:
+            parts = line.split('|')
+            widget.insert("end", "|", "table_sep")
+            for part in parts[1:-1]:
+                tag = "table_header" if is_table_header else "bold" if "**" in part else ""
+                clean_part = part.replace("**", "")
+                widget.insert("end", clean_part, tag)
+                widget.insert("end", "|", "table_sep")
+            widget.insert("end", "\n")
+            continue
+            
+        is_table_header = True
+        
+        ptr = 0
+        while ptr < len(line):
+            img_match = re.match(r'\!\[(.*?)\]\((.*?)\)', line[ptr:])
+            if img_match:
+                alt = img_match.group(1) or "图片"
+                widget.insert("end", f" [📷 图片: {alt}] ", "img")
+                ptr += img_match.end()
+                continue
+                
+            link_match = re.match(r'\[(.*?)\]\((.*?)\)', line[ptr:])
+            if link_match:
+                text = link_match.group(1)
+                widget.insert("end", text, "link")
+                ptr += link_match.end()
+                continue
+                
+            bold_match = re.match(r'\*\*(.*?)\*\*', line[ptr:])
+            if bold_match:
+                text = bold_match.group(1)
+                widget.insert("end", text, "bold")
+                ptr += bold_match.end()
+                continue
+                
+            widget.insert("end", line[ptr])
+            ptr += 1
+            
+        widget.insert("end", "\n")
+        
+    widget.configure(state="disabled")
+
 def get_theme_colors():
     is_dark = (ctk.get_appearance_mode() == "Dark")
     return {
@@ -454,7 +537,7 @@ class MessageDetailWindow(ctk.CTkToplevel):
         self.info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
 
         # 正文文本框
-        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(size=14))
+        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=14))
         self.textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=5)
         
         # 附件栏
@@ -503,7 +586,7 @@ class MessageDetailWindow(ctk.CTkToplevel):
             if not content_m:
                 content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
             if content_m:
-                content = ch_cli.clean_html(content_m.group(1))
+                content = ch_cli.render_html_to_markdown(content_m.group(1))
                 
             # 附件
             links = ch_cli.extract_attachment_links(html_content)
@@ -515,14 +598,14 @@ class MessageDetailWindow(ctk.CTkToplevel):
             success, data = res
             if not success:
                 self.title_lbl.configure(text="加载失败")
-                self.textbox.insert("0.0", data)
+                display_markdown_in_textbox(self.textbox, data)
                 self.att_lbl.configure(text="无法加载附件列表")
                 return
                 
             title, sender, send_time, content, links = data
             self.title_lbl.configure(text=title)
             self.info_lbl.configure(text=f"发送者: {sender}   |   发送时间: {send_time}")
-            self.textbox.insert("0.0", content)
+            display_markdown_in_textbox(self.textbox, content)
             
             self.attachment_links = links
             if links:
@@ -710,7 +793,7 @@ class NewsDetailWindow(ctk.CTkToplevel):
         self.info_lbl = ctk.CTkLabel(self.meta_frame, text="", text_color="grey60", font=ctk.CTkFont(size=12))
         self.info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
 
-        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(size=14))
+        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=14))
         self.textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=5)
         
         self.attachment_frame = ctk.CTkFrame(self, height=70)
@@ -752,7 +835,7 @@ class NewsDetailWindow(ctk.CTkToplevel):
             content = ""
             content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
             if content_m:
-                content = ch_cli.clean_html(content_m.group(1))
+                content = ch_cli.render_html_to_markdown(content_m.group(1))
                 
             links = ch_cli.extract_attachment_links(html_content)
             return True, (title, source, pub_time, content, links)
@@ -763,14 +846,14 @@ class NewsDetailWindow(ctk.CTkToplevel):
             success, data = res
             if not success:
                 self.title_lbl.configure(text="读取失败")
-                self.textbox.insert("0.0", data)
+                display_markdown_in_textbox(self.textbox, data)
                 self.att_lbl.configure(text="无法加载附件")
                 return
                 
             title, source, pub_time, content, links = data
             self.title_lbl.configure(text=title)
             self.info_lbl.configure(text=f"来源部门/人: {source}   |   发布时间: {pub_time}")
-            self.textbox.insert("0.0", content)
+            display_markdown_in_textbox(self.textbox, content)
             
             self.attachment_links = links
             if links:
@@ -945,7 +1028,7 @@ class HygieneDetailWindow(ctk.CTkToplevel):
         self.info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
 
         # 描述与多媒体列表显示区
-        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(size=14))
+        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=14))
         self.textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=5)
         
         # 违纪配图/视频多媒体下载条
@@ -973,7 +1056,7 @@ class HygieneDetailWindow(ctk.CTkToplevel):
             desc = "未知违纪说明"
             content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
             if content_m:
-                desc = ch_cli.clean_html(content_m.group(1))
+                desc = ch_cli.render_html_to_markdown(content_m.group(1))
                 
             recipients_all = "无"
             rec1_m = re.search(r'id="multiCollapseExample1">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
@@ -1005,7 +1088,7 @@ class HygieneDetailWindow(ctk.CTkToplevel):
             success, data = res
             if not success:
                 self.title_lbl.configure(text="加载详情失败")
-                self.textbox.insert("0.0", data)
+                display_markdown_in_textbox(self.textbox, data)
                 self.att_lbl.configure(text="📷 无法加载多媒体现场照片")
                 return
                 
@@ -1019,7 +1102,7 @@ class HygieneDetailWindow(ctk.CTkToplevel):
                     full_txt += f"- {u}\n"
             else:
                 full_txt += "无\n"
-            self.textbox.insert("0.0", full_txt)
+            display_markdown_in_textbox(self.textbox, full_txt)
             
             self.media_urls = media_urls
             if media_urls:
@@ -1616,7 +1699,7 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
         self.info_lbl = ctk.CTkLabel(self.meta_frame, text="", text_color="grey60", font=ctk.CTkFont(size=12))
         self.info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
 
-        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(size=14))
+        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=14))
         self.textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=5)
         
         # 配图多媒体
@@ -1664,7 +1747,7 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
             content = ""
             content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
             if content_m:
-                content = ch_cli.clean_html(content_m.group(1))
+                content = ch_cli.render_html_to_markdown(content_m.group(1))
                 
             # 提取多媒体
             media_urls = []
@@ -1695,14 +1778,14 @@ class LostFoundDetailWindow(ctk.CTkToplevel):
             success, data = res
             if not success:
                 self.title_lbl.configure(text="加载详情失败")
-                self.textbox.insert("0.0", data)
+                display_markdown_in_textbox(self.textbox, data)
                 self.att_lbl.configure(text="无法加载招领配图/附件")
                 return
                 
             title, reporter, reviewer, pub_time, content, media_urls = data
             self.title_lbl.configure(text=f"物品招领：{title}")
             self.info_lbl.configure(text=f"登记处: {reporter}   |   审核人: {reviewer}   |   时间: {pub_time}")
-            self.textbox.insert("0.0", content)
+            display_markdown_in_textbox(self.textbox, content)
             
             self.media_urls = media_urls
             if media_urls:

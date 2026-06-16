@@ -11,6 +11,7 @@ import uuid
 import time
 import argparse
 import unicodedata
+from html.parser import HTMLParser
 
 BASE_URL = "http://10.181.200.3"
 SESSION_FILE = os.path.expanduser("~/.ch_cli_session.json")
@@ -120,9 +121,15 @@ def make_request(url_path, method="GET", data=None, headers=None, follow_redirec
                 continue
             return 0, str(e).encode("utf-8"), {}
 
+def strip_ansi(s):
+    if not isinstance(s, str):
+        return str(s)
+    return re.sub(r'\033\[[0-9;]*m', '', s)
+
 def get_visual_width(s):
     width = 0
-    for char in s:
+    clean_s = strip_ansi(s)
+    for char in clean_s:
         if unicodedata.east_asian_width(char) in ('W', 'F', 'A'):
             width += 2
         else:
@@ -183,6 +190,344 @@ def clean_html(text):
         elif not non_empty or non_empty[-1] != "":
             non_empty.append("")
     return '\n'.join(non_empty).strip()
+
+class HTMLToMarkdown(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.output = []
+        self.current_line = ""
+        self.ignore_data = False
+        
+        self.bold_depth = 0
+        self.italic_depth = 0
+        
+        self.list_stack = []
+        self.tables = []
+        
+        self.current_href = None
+        self.current_link_text = ""
+
+    def write_text(self, text):
+        if self.tables and self.tables[-1]['current_cell'] is not None:
+            self.tables[-1]['current_cell'] += text
+            return
+        self.current_line += text
+
+    def ensure_newline(self):
+        if self.tables and self.tables[-1]['current_cell'] is not None:
+            self.tables[-1]['current_cell'] += "\n"
+            return
+            
+        line = self.current_line.strip()
+        if line:
+            self.output.append(self.current_line.rstrip())
+            self.current_line = ""
+        elif self.current_line == "":
+            if self.output and self.output[-1] != "":
+                self.output.append("")
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in ('style', 'script'):
+            self.ignore_data = True
+            return
+        if self.ignore_data:
+            return
+            
+        attr_dict = dict(attrs)
+        
+        if tag == 'table':
+            self.tables.append({'rows': [], 'current_row': None, 'current_cell': None})
+            return
+        elif tag == 'tr':
+            if self.tables:
+                self.tables[-1]['current_row'] = []
+            return
+        elif tag in ('td', 'th'):
+            if self.tables and self.tables[-1]['current_row'] is not None:
+                self.tables[-1]['current_cell'] = ""
+            return
+
+        if tag in ('p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'hr'):
+            self.ensure_newline()
+            
+        if tag == 'h1':
+            self.write_text("# ")
+        elif tag == 'h2':
+            self.write_text("## ")
+        elif tag == 'h3':
+            self.write_text("### ")
+        elif tag in ('h4', 'h5', 'h6'):
+            self.write_text("#### ")
+            
+        elif tag in ('strong', 'b'):
+            self.bold_depth += 1
+            self.write_text("**")
+        elif tag in ('em', 'i'):
+            self.italic_depth += 1
+            self.write_text("*")
+            
+        elif tag in ('ul', 'ol'):
+            self.list_stack.append((tag, 0))
+        elif tag == 'li':
+            if self.list_stack:
+                list_type, count = self.list_stack[-1]
+                if list_type == 'ol':
+                    count += 1
+                    self.list_stack[-1] = (list_type, count)
+                    prefix = "  " * (len(self.list_stack) - 1) + f"{count}. "
+                else:
+                    prefix = "  " * (len(self.list_stack) - 1) + "- "
+                self.write_text(prefix)
+                
+        elif tag == 'a':
+            self.current_href = attr_dict.get('href')
+            self.current_link_text = ""
+            self.write_text("[")
+            
+        elif tag == 'img':
+            src = attr_dict.get('src')
+            alt = attr_dict.get('alt', '图片')
+            if src:
+                if "Logo" not in src and "newFunc" not in src and "sydw" not in src:
+                    full_url = src.strip()
+                    if not full_url.startswith("http"):
+                        if full_url.startswith("/"):
+                            full_url = f"{BASE_URL}{full_url}"
+                        else:
+                            full_url = f"{BASE_URL}/{full_url}"
+                    self.write_text(f"![{alt}]({full_url})")
+                    
+        elif tag == 'br':
+            self.ensure_newline()
+            
+        elif tag == 'hr':
+            self.ensure_newline()
+            self.write_text("---")
+            self.ensure_newline()
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in ('style', 'script'):
+            self.ignore_data = True
+            return
+        if self.ignore_data:
+            return
+            
+        if tag == 'table':
+            if self.tables:
+                table_data = self.tables.pop()
+                rendered = self.render_md_table(table_data['rows'])
+                if rendered:
+                    self.ensure_newline()
+                    for line in rendered.split('\n'):
+                        self.output.append(line)
+                    self.ensure_newline()
+            return
+        elif tag == 'tr':
+            if self.tables and self.tables[-1]['current_row'] is not None:
+                row = self.tables[-1]['current_row']
+                self.tables[-1]['rows'].append(row)
+                self.tables[-1]['current_row'] = None
+            return
+        elif tag in ('td', 'th'):
+            if self.tables and self.tables[-1]['current_row'] is not None:
+                cell_text = self.tables[-1].get('current_cell', "")
+                self.tables[-1]['current_row'].append(cell_text.strip().replace("\n", " ").replace("|", "\\|"))
+                self.tables[-1]['current_cell'] = None
+            return
+
+        if tag in ('p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li'):
+            self.ensure_newline()
+            
+        if tag in ('strong', 'b'):
+            self.bold_depth = max(0, self.bold_depth - 1)
+            self.write_text("**")
+        elif tag in ('em', 'i'):
+            self.italic_depth = max(0, self.italic_depth - 1)
+            self.write_text("*")
+            
+        elif tag in ('ul', 'ol'):
+            if self.list_stack:
+                self.list_stack.pop()
+            self.ensure_newline()
+            
+        elif tag == 'a':
+            if self.current_href:
+                href = self.current_href.strip()
+                if href and href != "#" and "javascript:" not in href:
+                    full_url = href
+                    if not href.startswith("http"):
+                        if href.startswith("/"):
+                            full_url = f"{BASE_URL}{href}"
+                        else:
+                            full_url = f"{BASE_URL}/{full_url}"
+                    self.write_text(f"]({full_url})")
+                else:
+                    self.write_text("]")
+            else:
+                self.write_text("]")
+            self.current_href = None
+            self.current_link_text = ""
+
+    def handle_data(self, data):
+        if self.ignore_data:
+            return
+        if self.current_href is not None:
+            self.current_link_text += data
+            
+        data_clean = re.sub(r'\s+', ' ', data)
+        
+        if self.tables and self.tables[-1]['current_cell'] is not None:
+            buf = self.tables[-1]['current_cell']
+        else:
+            buf = self.current_line
+            
+        if data_clean == ' ':
+            if not buf or buf[-1] in (' ', '\n') or buf.endswith(' '):
+                return
+                
+        if data_clean.startswith(' '):
+            if not buf or buf[-1] in (' ', '\n') or buf.endswith(' '):
+                data_clean = data_clean[1:]
+                
+        if data_clean:
+            self.write_text(data_clean)
+
+    def handle_entityref(self, name):
+        if self.ignore_data:
+            return
+        entity_map = {
+            'nbsp': ' ', 'lt': '<', 'gt': '>', 'amp': '&', 'quot': '"', 'apos': "'"
+        }
+        val = entity_map.get(name, f"&{name};")
+        self.write_text(val)
+        
+    def handle_charref(self, name):
+        if self.ignore_data:
+            return
+        try:
+            val = chr(int(name[1:], 16)) if name.startswith('x') else chr(int(name))
+            self.write_text(val)
+        except:
+            pass
+
+    def get_visual_width(self, s):
+        import unicodedata
+        clean_s = s.replace("**", "").replace("*", "")
+        width = 0
+        for char in clean_s:
+            if unicodedata.east_asian_width(char) in ('W', 'F', 'A'):
+                width += 2
+            else:
+                width += 1
+        return width
+
+    def render_md_table(self, rows):
+        if not rows:
+            return ""
+        num_cols = max(len(row) for row in rows)
+        if num_cols == 0:
+            return ""
+            
+        for row in rows:
+            while len(row) < num_cols:
+                row.append("")
+                
+        # 计算每一列的最大视觉宽度
+        col_widths = []
+        for c in range(num_cols):
+            widths = []
+            for row in rows:
+                widths.append(self.get_visual_width(row[c]))
+            col_widths.append(max(max(widths), 3))
+            
+        lines = []
+        
+        # 格式化一行
+        def format_row(row):
+            parts = []
+            for c, val in enumerate(row):
+                w = self.get_visual_width(val)
+                pad = col_widths[c] - w
+                parts.append(val + " " * pad)
+            return "| " + " | ".join(parts) + " |"
+            
+        # 1. 渲染表头
+        lines.append(format_row(rows[0]))
+        
+        # 2. 渲染分割线
+        sep_parts = []
+        for w in col_widths:
+            sep_parts.append("-" * w)
+        sep_line = "| " + " | ".join(sep_parts) + " |"
+        lines.append(sep_line)
+        
+        # 3. 渲染数据行
+        for row in rows[1:]:
+            lines.append(format_row(row))
+            
+        return "\n".join(lines)
+
+    def get_markdown(self):
+        if self.current_line.strip():
+            self.output.append(self.current_line.rstrip())
+            
+        cleaned = []
+        for line in self.output:
+            if line.strip() == "":
+                if cleaned and cleaned[-1] != "":
+                    cleaned.append("")
+            else:
+                cleaned.append(line)
+                
+        while cleaned and cleaned[0] == "":
+            cleaned.pop(0)
+        while cleaned and cleaned[-1] == "":
+            cleaned.pop()
+            
+        return "\n".join(cleaned)
+
+def render_html_to_markdown(html):
+    if not html:
+        return ""
+    html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    parser = HTMLToMarkdown()
+    try:
+        parser.feed(html)
+        return parser.get_markdown()
+    except Exception as e:
+        return clean_html(html)
+
+def colorize_markdown(md_text):
+    lines = []
+    for line in md_text.split('\n'):
+        if line.startswith('# '):
+            line = f"{C_BOLD}{C_GREEN}{line}{C_RESET}"
+        elif line.startswith('## '):
+            line = f"{C_BOLD}{C_GREEN}{line}{C_RESET}"
+        elif line.startswith('### '):
+            line = f"{C_BOLD}{C_CYAN}{line}{C_RESET}"
+        elif line.startswith('#### '):
+            line = f"{C_BOLD}{C_CYAN}{line}{C_RESET}"
+            
+        line = re.sub(r'\!\[(.*?)\]\((.*?)\)', f"{C_YELLOW}[图片: \\1 - \\2]{C_RESET}", line)
+        line = re.sub(r'\[(.*?)\]\((.*?)\)', f"\\1 ({C_CYAN}\\2{C_RESET})", line)
+        line = re.sub(r'\*\*(.*?)\*\*', f"{C_BOLD}\\1{C_RESET}", line)
+        
+        if '|' in line:
+            if '---' in line:
+                line = f"{C_BLUE}{line}{C_RESET}"
+            else:
+                line = line.replace('|', f"{C_BLUE}|{C_RESET}")
+                
+        lines.append(line)
+    return '\n'.join(lines)
+
+def render_html_content(html):
+    md_text = render_html_to_markdown(html)
+    return colorize_markdown(md_text)
 
 def extract_attachment_links(html_content):
     attachment_links = []
@@ -484,11 +829,11 @@ def cmd_messages(args):
         content = ""
         content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>\s*</div>', html_content, re.DOTALL)
         if content_m:
-            content = clean_html(content_m.group(1))
+            content = render_html_content(content_m.group(1))
         else:
             content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
             if content_m:
-                content = clean_html(content_m.group(1))
+                content = render_html_content(content_m.group(1))
                 
         recipients_all = "无"
         rec1_m = re.search(r'id="multiCollapseExample1">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
@@ -602,7 +947,7 @@ def cmd_hygiene(args):
         content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
         if content_m:
             desc_html = content_m.group(1)
-            desc = clean_html(desc_html)
+            desc = render_html_content(desc_html)
             
         media_urls = []
         imgs = re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_content)
@@ -964,7 +1309,7 @@ def cmd_news(args):
         content = ""
         content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
         if content_m:
-            content = clean_html(content_m.group(1))
+            content = render_html_content(content_m.group(1))
             
         print(f"\n{C_BOLD}{C_GREEN}文章详情 {C_RESET}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
@@ -1160,7 +1505,7 @@ def cmd_lostfound(args):
         content = ""
         content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
         if content_m:
-            content = clean_html(content_m.group(1))
+            content = render_html_content(content_m.group(1))
             
         # 提取招领中关联的图片/视频等多媒体
         media_urls = []
