@@ -3,6 +3,7 @@ name: Build and Release GUI
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 permissions:
@@ -85,8 +86,8 @@ jobs:
     - name: Create or Update GitHub Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: latest
-        name: Latest GUI Release (Auto Build)
+        tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+        name: ${{ github.ref_type == 'tag' && github.ref_name || 'Latest GUI Release (Auto Build)' }}
         body: |
           春晖中学校园网跨平台 GUI 客户端最新的自动编译版本。
           
@@ -94,7 +95,7 @@ jobs:
           - **`chunhui-gui-win.exe`**: Windows 64位独立运行版（免安装，解压即用）。
           - **`chunhui-gui-mac.zip`**: macOS 平台便携绿色压缩包（解压后双击即可运行）。
         draft: false
-        prerelease: true
+        prerelease: ${{ github.ref_type != 'tag' }}
         files: |
           dist/chunhui-gui-win.exe
           dist/chunhui-gui-mac.zip
