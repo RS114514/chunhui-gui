@@ -1277,7 +1277,7 @@ def cmd_gallery(args):
             print(json.dumps({"success": False, "error": str(e)}))
 
     elif args.action == "items":
-        url = f"http://{ip_port}/webapi/entry.cgi"
+        url = f"http://{ip_port}/photo/webapi/entry.cgi"
         params = {
             "api": "SYNO.FotoTeam.Browse.Item",
             "method": "list",
@@ -1584,7 +1584,7 @@ def handle_tui_action(choice):
                     print(f"\n{C_BOLD}{C_GREEN}=== 文件夹 ID: {fid} 照片列表 ==={C_RESET}")
                     ip_port = "10.181.201.188:5000"
                     token = "zmwdE4vqUthmo"
-                    url = f"http://{ip_port}/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Item&method=list&version=1&SynoToken={token}&offset=0&limit=100&folder_id={fid}"
+                    url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Item&method=list&version=1&SynoToken={token}&offset=0&limit=100&folder_id={fid}"
                     status, body, _ = make_request(url, method="GET")
                     if status == 200:
                         try:
@@ -1593,7 +1593,7 @@ def handle_tui_action(choice):
                                 items = res.get("data", {}).get("list", [])
                                 for item in items:
                                     print(f"  📷 {C_CYAN}{item.get('filename')}{C_RESET} (ID: {item.get('id')})")
-                                    thumb_url = f"http://{ip_port}/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={item.get('id')}&size=m"
+                                    thumb_url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={item.get('id')}\u0026size=m"
                                     print(f"     └─ 缩略图: {C_GREY}{thumb_url}{C_RESET}")
                             else:
                                 print("  API 返回失败:", res.get("error"))

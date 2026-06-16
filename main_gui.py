@@ -2003,8 +2003,8 @@ class GalleryFrame(ctk.CTkFrame):
         # 内存缩略图缓存，结构：{photo_id: CTkImage}
         self.thumbnail_cache = {}
         
-        self.current_folder_id = None
-        self.current_folder_name = ""
+        # 导航历史栈，记录路径层级。默认以根目录开始
+        self.navigation_stack = [{"id": 1, "name": "共享空间根目录"}]
         
         # 顶部导航控制栏
         self.header = ctk.CTkFrame(self, fg_color="transparent")
@@ -2019,11 +2019,11 @@ class GalleryFrame(ctk.CTkFrame):
         
         self.breadcrumb_btn = ctk.CTkButton(
             self.title_frame, 
-            text="< 返回根目录", 
+            text="< 返回上一级", 
             width=90, 
             height=26,
             font=ctk.CTkFont(size=12),
-            command=self.show_root_folders
+            command=self.go_back
         )
         
         # 右侧操作按钮
@@ -2045,187 +2045,184 @@ class GalleryFrame(ctk.CTkFrame):
         )
         self.refresh_btn.pack(side="right", padx=5)
         
-        # 文件夹滚动框架
-        self.folders_scroll = ctk.CTkScrollableFrame(self)
-        self.folders_scroll.pack(fill="both", expand=True)
-        
-        # 照片滚动框架 (初始隐藏)
-        self.items_scroll = ctk.CTkScrollableFrame(self)
+        # 核心滚动容器 (子文件夹与照片同卷滚动展示)
+        self.main_scroll = ctk.CTkScrollableFrame(self)
+        self.main_scroll.pack(fill="both", expand=True)
         
         self.loaded_folders = False
         
     def on_show(self):
         if not self.loaded_folders:
-            self.load_folders()
+            self.load_current_folder()
             
     def open_web_gallery(self):
         web_url = "http://10.181.201.188:5000/?launchApp=SYNO.Foto.AppInstance&SynoToken=zmwdE4vqUthmo#/shared_space/folder/1"
         webbrowser.open(web_url)
         
     def refresh_current_view(self):
-        if self.current_folder_id is None:
-            self.load_folders()
-        else:
-            self.load_folder_items(self.current_folder_id, self.current_folder_name)
-            
-    def show_root_folders(self):
-        self.current_folder_id = None
-        self.current_folder_name = ""
-        self.breadcrumb_btn.pack_forget()
-        self.title_label.configure(text="春晖图库共享空间")
-        self.items_scroll.pack_forget()
-        self.folders_scroll.pack(fill="both", expand=True)
+        self.load_current_folder()
         
-    def load_folders(self):
-        for child in self.folders_scroll.winfo_children():
+    def enter_folder(self, folder_id, folder_name):
+        self.navigation_stack.append({"id": folder_id, "name": folder_name})
+        self.load_current_folder()
+        
+    def go_back(self):
+        if len(self.navigation_stack) > 1:
+            self.navigation_stack.pop()
+            self.load_current_folder()
+            
+    def load_current_folder(self):
+        current = self.navigation_stack[-1]
+        cur_id = current["id"]
+        
+        # 1. 刷新面包屑导航路径
+        if len(self.navigation_stack) <= 1:
+            self.title_label.configure(text="春晖图库共享空间")
+            self.breadcrumb_btn.pack_forget()
+        else:
+            path_str = " > ".join([item["name"] for item in self.navigation_stack[1:]])
+            self.title_label.configure(text=f"春晖图库 > {path_str}")
+            self.breadcrumb_btn.pack(side="left", padx=10)
+            
+        # 2. 清空主体容器并进入加载状态
+        for child in self.main_scroll.winfo_children():
             child.destroy()
             
-        loading = ctk.CTkLabel(self.folders_scroll, text="正在读取共享文件夹，请稍候...", font=ctk.CTkFont(size=14))
+        loading = ctk.CTkLabel(self.main_scroll, text="正在拉取文件夹与照片，请稍候...", font=ctk.CTkFont(size=14))
         loading.pack(pady=40)
         self.refresh_btn.configure(state="disabled")
         
-        def task():
+        # 3. 异步并发拉取子文件夹与照片元数据
+        results = {"folders": None, "items": None}
+        
+        def fetch_data():
+            ip_port = "10.181.201.188:5000"
+            token = "zmwdE4vqUthmo"
+            
+            # 拉取子文件夹
             try:
-                ip_port = "10.181.201.188:5000"
-                token = "zmwdE4vqUthmo"
-                url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Folder&method=list&version=1&SynoToken={token}&offset=0&limit=100&id=1&additional=%5B%22thumbnail%22%5D"
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    data = json.loads(response.read().decode("utf-8"))
-                    if data.get("success"):
-                        return True, data["data"]["list"]
+                f_url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Folder&method=list&version=1&SynoToken={token}&offset=0&limit=100&id={cur_id}&additional=%5B%22thumbnail%22%5D"
+                req_f = urllib.request.Request(f_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req_f, timeout=5) as response:
+                    data_f = json.loads(response.read().decode("utf-8"))
+                    if data_f.get("success"):
+                        results["folders"] = (True, data_f["data"]["list"])
                     else:
-                        return False, "API 响应失败"
+                        results["folders"] = (False, "API 响应错误")
             except Exception as e:
-                return False, str(e)
+                results["folders"] = (False, str(e))
                 
+            # 拉取照片列表
+            try:
+                i_url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Item&method=list&version=1&SynoToken={token}&offset=0&limit=100&folder_id={cur_id}&additional=%5B%22thumbnail%22%2C%22resolution%22%5D"
+                req_i = urllib.request.Request(i_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req_i, timeout=5) as response:
+                    data_i = json.loads(response.read().decode("utf-8"))
+                    if data_i.get("success"):
+                        results["items"] = (True, data_i["data"]["list"])
+                    else:
+                        results["items"] = (True, [])
+            except Exception:
+                results["items"] = (True, [])
+                
+            return results
+
         def callback(res):
             self.refresh_btn.configure(state="normal")
-            for child in self.folders_scroll.winfo_children():
+            for child in self.main_scroll.winfo_children():
                 child.destroy()
                 
-            success, val = res
-            if not success:
-                err = ctk.CTkLabel(self.folders_scroll, text=f"无法加载图库文件夹: {val}\n请确认已连接校园局域网。", text_color="red")
+            folders_ok, folders_data = res["folders"]
+            items_ok, items_data = res["items"]
+            
+            if not folders_ok:
+                err = ctk.CTkLabel(self.main_scroll, text=f"无法加载共享文件夹: {folders_data}\n请确认已连接校园局域网。", text_color="red")
                 err.pack(pady=40)
+                return
+                
+            has_folders = len(folders_data) > 0
+            has_items = len(items_data) > 0
+            
+            if not has_folders and not has_items:
+                empty = ctk.CTkLabel(self.main_scroll, text="当前文件夹内无任何子文件夹或照片。")
+                empty.pack(pady=40)
                 return
                 
             self.loaded_folders = True
             
-            # 渲染 3 列的网格布局
-            cols = 3
-            for idx, folder in enumerate(val):
-                row = idx // cols
-                col = idx % cols
+            # 渲染子文件夹区域
+            if has_folders:
+                f_title = ctk.CTkLabel(self.main_scroll, text="📁 共享文件夹", font=ctk.CTkFont(size=14, weight="bold"))
+                f_title.pack(anchor="w", padx=10, pady=(10, 5))
                 
-                f_id = folder.get("id")
-                f_name = folder.get("name").lstrip('/')
+                f_grid = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
+                f_grid.pack(fill="x", padx=5, pady=5)
                 
-                card = ctk.CTkFrame(self.folders_scroll, width=250, height=90, corner_radius=6)
-                card.grid(row=row, column=col, padx=12, pady=12, sticky="nsew")
-                card.grid_propagate(False)
+                cols = 3
+                for idx, folder in enumerate(folders_data):
+                    row = idx // cols
+                    col = idx % cols
+                    
+                    f_id = folder.get("id")
+                    f_name = folder.get("name").lstrip('/')
+                    
+                    card = ctk.CTkFrame(f_grid, width=250, height=90, corner_radius=6)
+                    card.grid(row=row, column=col, padx=12, pady=12, sticky="nsew")
+                    card.grid_propagate(False)
+                    
+                    card.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
+                    
+                    thumb_lbl = ctk.CTkLabel(card, text="📁", font=ctk.CTkFont(size=24))
+                    thumb_lbl.pack(side="left", padx=15, pady=10)
+                    thumb_lbl.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
+                    
+                    text_frame = ctk.CTkFrame(card, fg_color="transparent")
+                    text_frame.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=10)
+                    text_frame.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
+                    
+                    name_lbl = ctk.CTkLabel(text_frame, text=f_name, font=ctk.CTkFont(size=12, weight="bold"), anchor="w", justify="left")
+                    name_lbl.pack(fill="x", side="top")
+                    name_lbl.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
+                    
+                    id_lbl = ctk.CTkLabel(text_frame, text=f"文件夹 ID: {f_id}", font=ctk.CTkFont(size=10), text_color="grey60", anchor="w")
+                    id_lbl.pack(fill="x", side="bottom")
+                    id_lbl.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
+                    
+                    self.load_thumbnail_async(f_id, thumb_lbl, is_folder=True)
+                    
+            # 渲染相片区域
+            if has_items:
+                i_title = ctk.CTkLabel(self.main_scroll, text="📷 照片文件", font=ctk.CTkFont(size=14, weight="bold"))
+                i_title.pack(anchor="w", padx=10, pady=(20, 5))
                 
-                # 双击或单击进入
-                card.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.load_folder_items(fid, name))
+                i_grid = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
+                i_grid.pack(fill="x", padx=5, pady=5)
                 
-                # 默认文件夹占位
-                thumb_lbl = ctk.CTkLabel(card, text="📁", font=ctk.CTkFont(size=24))
-                thumb_lbl.pack(side="left", padx=15, pady=10)
-                thumb_lbl.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.load_folder_items(fid, name))
-                
-                text_frame = ctk.CTkFrame(card, fg_color="transparent")
-                text_frame.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=10)
-                text_frame.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.load_folder_items(fid, name))
-                
-                name_lbl = ctk.CTkLabel(text_frame, text=f_name, font=ctk.CTkFont(size=12, weight="bold"), anchor="w", justify="left")
-                name_lbl.pack(fill="x", side="top")
-                name_lbl.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.load_folder_items(fid, name))
-                
-                id_lbl = ctk.CTkLabel(text_frame, text=f"文件夹 ID: {f_id}", font=ctk.CTkFont(size=10), text_color="grey60", anchor="w")
-                id_lbl.pack(fill="x", side="bottom")
-                id_lbl.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.load_folder_items(fid, name))
-                
-                # 异步后台拉取真实封面图
-                self.load_thumbnail_async(f_id, thumb_lbl, is_folder=True)
-                
-        self.controller.run_async(task, callback=callback)
-        
-    def load_folder_items(self, folder_id, folder_name):
-        self.current_folder_id = folder_id
-        self.current_folder_name = folder_name
-        
-        self.title_label.configure(text=f"春晖图库 > {folder_name}")
-        self.breadcrumb_btn.pack(side="left", padx=10)
-        
-        self.folders_scroll.pack_forget()
-        self.items_scroll.pack(fill="both", expand=True)
-        
-        for child in self.items_scroll.winfo_children():
-            child.destroy()
-            
-        loading = ctk.CTkLabel(self.items_scroll, text="正在读取照片列表，请稍候...", font=ctk.CTkFont(size=14))
-        loading.pack(pady=40)
-        self.refresh_btn.configure(state="disabled")
-        
-        def task():
-            try:
-                ip_port = "10.181.201.188:5000"
-                token = "zmwdE4vqUthmo"
-                url = f"http://{ip_port}/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Item&method=list&version=1&SynoToken={token}&offset=0&limit=100&folder_id={folder_id}&additional=%5B%22thumbnail%22%2C%22resolution%22%5D"
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    data = json.loads(response.read().decode("utf-8"))
-                    if data.get("success"):
-                        return True, data["data"]["list"]
-                    else:
-                        return False, "API 响应错误"
-            except Exception as e:
-                return False, str(e)
-                
-        def callback(res):
-            self.refresh_btn.configure(state="normal")
-            for child in self.items_scroll.winfo_children():
-                child.destroy()
-                
-            success, val = res
-            if not success:
-                err = ctk.CTkLabel(self.items_scroll, text=f"加载照片失败: {val}", text_color="red")
-                err.pack(pady=40)
-                return
-                
-            if not val:
-                empty = ctk.CTkLabel(self.items_scroll, text="当前文件夹没有照片文件。")
-                empty.pack(pady=40)
-                return
-                
-            # 4 列的网格布局
-            cols = 4
-            for idx, item in enumerate(val):
-                row = idx // cols
-                col = idx % cols
-                
-                item_id = item.get("id")
-                filename = item.get("filename")
-                
-                card = ctk.CTkFrame(self.items_scroll, width=175, height=155, corner_radius=6)
-                card.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
-                card.grid_propagate(False)
-                
-                card.bind("<Button-1>", lambda event, iid=item_id, fname=filename: self.open_lightbox(iid, fname))
-                
-                # 默认照片载入中图标
-                photo_lbl = ctk.CTkLabel(card, text="⏳", font=ctk.CTkFont(size=20))
-                photo_lbl.pack(fill="both", expand=True, padx=5, pady=(5, 2))
-                photo_lbl.bind("<Button-1>", lambda event, iid=item_id, fname=filename: self.open_lightbox(iid, fname))
-                
-                name_lbl = ctk.CTkLabel(card, text=filename, font=ctk.CTkFont(size=11), text_color=("gray10", "gray90"), anchor="center")
-                name_lbl.pack(fill="x", side="bottom", padx=5, pady=(2, 5))
-                name_lbl.bind("<Button-1>", lambda event, iid=item_id, fname=filename: self.open_lightbox(iid, fname))
-                
-                # 异步加载照片缩略图
-                self.load_thumbnail_async(item_id, photo_lbl, is_folder=False)
-                
-        self.controller.run_async(task, callback=callback)
+                cols = 4
+                for idx, item in enumerate(items_data):
+                    row = idx // cols
+                    col = idx % cols
+                    
+                    item_id = item.get("id")
+                    filename = item.get("filename")
+                    
+                    card = ctk.CTkFrame(i_grid, width=175, height=155, corner_radius=6)
+                    card.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
+                    card.grid_propagate(False)
+                    
+                    card.bind("<Button-1>", lambda event, iid=item_id, fname=filename: self.open_lightbox(iid, fname))
+                    
+                    photo_lbl = ctk.CTkLabel(card, text="⏳", font=ctk.CTkFont(size=20))
+                    photo_lbl.pack(fill="both", expand=True, padx=5, pady=(5, 2))
+                    photo_lbl.bind("<Button-1>", lambda event, iid=item_id, fname=filename: self.open_lightbox(iid, fname))
+                    
+                    name_lbl = ctk.CTkLabel(card, text=filename, font=ctk.CTkFont(size=11), text_color=("gray10", "gray90"), anchor="center")
+                    name_lbl.pack(fill="x", side="bottom", padx=5, pady=(2, 5))
+                    name_lbl.bind("<Button-1>", lambda event, iid=item_id, fname=filename: self.open_lightbox(iid, fname))
+                    
+                    self.load_thumbnail_async(item_id, photo_lbl, is_folder=False)
+                    
+        self.controller.run_async(fetch_data, callback=callback)
         
     def load_thumbnail_async(self, photo_id, label, is_folder=False):
         if photo_id in self.thumbnail_cache:
@@ -2237,7 +2234,7 @@ class GalleryFrame(ctk.CTkFrame):
             try:
                 ip_port = "10.181.201.188:5000"
                 token = "zmwdE4vqUthmo"
-                url = f"http://{ip_port}/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={photo_id}&size=m"
+                url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={photo_id}&size=m"
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=5) as response:
                     img_data = response.read()
@@ -2277,8 +2274,7 @@ class GalleryFrame(ctk.CTkFrame):
     def open_lightbox(self, photo_id, filename):
         detail_win = GalleryLightboxWindow(self.controller, photo_id, filename)
         self.controller.wait_window(detail_win)
-
-
+        
 class GalleryLightboxWindow(ctk.CTkToplevel):
     def __init__(self, parent, photo_id, filename):
         super().__init__(parent)
@@ -2347,7 +2343,7 @@ class GalleryLightboxWindow(ctk.CTkToplevel):
             try:
                 ip_port = "10.181.201.188:5000"
                 token = "zmwdE4vqUthmo"
-                url = f"http://{ip_port}/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={self.photo_id}&size=xl"
+                url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={self.photo_id}&size=xl"
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=8) as response:
                     self.large_image_bytes = response.read()
@@ -2376,9 +2372,10 @@ class GalleryLightboxWindow(ctk.CTkToplevel):
                             
                 self.after(0, update_ui)
             except Exception as e:
+                err_msg = str(e)
                 def fallback():
                     if self.image_label.winfo_exists():
-                        self.image_label.configure(text=f"照片下载失败: {e}\n请检查局域网连接状态。", text_color="red")
+                        self.image_label.configure(text=f"照片下载失败: {err_msg}\n请检查局域网连接状态。", text_color="red")
                 self.after(0, fallback)
                 
         threading.Thread(target=download_thread, daemon=True).start()
