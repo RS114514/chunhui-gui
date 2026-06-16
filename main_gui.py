@@ -1938,8 +1938,8 @@ class FileFrame(ctk.CTkFrame):
         filename = os.path.basename(file_path)
         file_size = os.path.getsize(file_path)
         
-        # 2MB 逻辑分片
-        chunk_size = 2 * 1024 * 1024
+        # 100MB 逻辑分片
+        chunk_size = 100 * 1024 * 1024
         total_chunks = (file_size + chunk_size - 1) // chunk_size
         if total_chunks == 0:
             total_chunks = 1
