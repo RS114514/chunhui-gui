@@ -1,5 +1,11 @@
 # 春晖中学校园网图形界面客户端 (chunhui-gui)
 
+[![Platform-Windows](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/RS114514/chunhui-gui/releases/tag/latest)
+[![Platform-macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](https://github.com/RS114514/chunhui-gui/releases/tag/latest)
+[![Language-Python](https://img.shields.io/badge/language-Python-3776AB)](https://www.python.org/)
+[![UI-CustomTkinter](https://img.shields.io/badge/UI-CustomTkinter-blueviolet)](https://github.com/TomSchimansky/CustomTkinter)
+[![License-MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/RS114514/chunhui-gui/blob/main/LICENSE)
+
 本项目是专为春晖中学校园网打造的现代化、高质感跨平台桌面图形界面（GUI）客户端。基于 Python 3 与 **CustomTkinter** 现代美学界面库开发，具备轻量化、圆角扁平卡片设计与高 DPI 自适应特性。
 
 客户端内置了独立的 Python 运行时，解压即可运行，**免除配置开发环境的烦恼**。
@@ -26,11 +32,11 @@
 ## 🚀 下载与使用
 
 ### 1. 从 Releases 页面直接下载（推荐，无需任何环境配置）
-每次向 GitHub 仓库推送代码时，自动化构建流水线（GitHub Actions）会同时在 Windows 和 macOS 虚拟机上为客户端进行独立封装。
+每次向 GitHub 仓库推送代码时，自动化构建工作流（GitHub Actions）会同时在 Windows 和 macOS 虚拟机上为客户端进行独立封装。
 - 前往 GitHub 仓库的 **Releases** 页面。
 - 根据您的系统下载对应的最新发布产物：
-  - **Windows 用户**：下载 **`chunhui-gui-win.exe`**，双击即可直接在您的电脑上开启独立运行（无任何 Python 依赖）。
-  - **macOS 用户**：下载 **`chunhui-gui-mac.zip`**，解压后双击包内的应用程序即可运行。
+  - **Windows 用户**：下载 **`chunhui-gui-win.exe`**，双击即可直接运行（无任何 Python 依赖）。
+  - **macOS 用户**：下载 **`chunhui-gui-mac.zip`**，解压后双击包内的 `chunhui-gui-mac.app` 即可运行。
 
 ### 2. 在本地手动运行（开发调试）
 如果您的电脑安装了 Python 3 运行时，可以直接克隆项目在本地运行：
@@ -42,3 +48,28 @@
    ```bash
    python3 main_gui.py
    ```
+
+### 3. 免联线本地离线测试工具
+我们提供了一个独立的离线 UI 测试工具 **`test_gui.py`**。
+- 您可以在没有内网或未登录校园网的情况下，直接运行该脚本：
+  ```bash
+  python3 test_gui.py
+  ```
+- 该工具支持左侧实时输入/编辑网页 HTML 源码，右侧直接预览 Markdown 富文本表格与各种格式的排版效果，方便开发与调试。
+
+---
+
+## 📅 更新日志
+
+### [v1.2.0] - 2026-06-17
+#### 🎨 客户端全面 Markdown 富文本升级
+- **富文本展示**：公告消息、资讯公告、违纪明细和失物招领四大详情窗口全面接入原生 Markdown 渲染，自动吃掉原生语法标记（如 `**` 等），支持粗体高亮、下划线链接、大标题样式展示。
+- **表格完美像素对齐**：统一表格内部所有常规文本、表头加粗文本、以及分割竖线（`table_sep`）的字号大小为基准 **14 号字**，结合中英文真实字符视觉宽度（`get_visual_width`）空格填充，彻底解决等宽表格歪斜错位的 Bug。
+- **解决 Tag 缩放限制报错**：绕过 customtkinter 直接修改底层的 `_textbox.tag_config`，解决了 CTkTextbox 自带的 tag_config 与 scaling 机制冲突导致的 AttributeError 闪退报错。
+- **新增工具**：新增免联线本地离线测试程序 `test_gui.py`。
+
+---
+
+## 📄 开源协议
+
+本项目基于 **[MIT License](LICENSE)** 协议开源。
