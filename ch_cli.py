@@ -1056,7 +1056,7 @@ def cmd_bedroom(args):
             
     elif args.action == "hygiene":
         dorm_mapping = {
-            "1": "3号楼", "2": "4号楼", "3": "5号楼", "4": "6号楼", "5": "7号楼", "6": "8号楼", "7": "9号楼", "8": "10号楼", "9": "1号楼"
+            "1": "3号楼", "2": "4号楼", "3": "5号楼", "4": "6号楼", "5": "7号楼", "6": "8号楼", "7": "9号楼", "8": "10号楼", "9": "11号楼"
         }
         
         # 楼宇输入映射
@@ -1245,6 +1245,62 @@ def cmd_lostfound(args):
         print(f"      发布处: {C_CYAN}{reporter}{C_RESET}  |  日期: {C_GREY}{start_date}{C_RESET}  |  状态: {status_color}{status_text}{C_RESET}")
         print(f"      {C_BLUE}┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄{C_RESET}")
     print(f"{C_GREY}提示: 使用 `python3 ch_cli.py lostfound --show <ID>` 查看招领联系方式等详情。{C_RESET}\n")
+
+def cmd_gallery(args):
+    ip_port = "10.181.201.188:5000"
+    token = "zmwdE4vqUthmo"
+    
+    if args.action == "folders":
+        url = f"http://{ip_port}/photo/webapi/entry.cgi"
+        params = {
+            "api": "SYNO.FotoTeam.Browse.Folder",
+            "method": "list",
+            "version": 1,
+            "SynoToken": token,
+            "offset": 0,
+            "limit": 100,
+            "id": 1,
+            "additional": '["thumbnail"]'
+        }
+        query = urllib.parse.urlencode(params)
+        full_url = f"{url}?{query}"
+        
+        status, body, _ = make_request(full_url, method="GET")
+        if status != 200:
+            print(json.dumps({"success": False, "error": f"HTTP Error {status}"}))
+            return
+        
+        try:
+            res_json = json.loads(body.decode("utf-8", errors="ignore"))
+            print(json.dumps(res_json, ensure_ascii=False))
+        except Exception as e:
+            print(json.dumps({"success": False, "error": str(e)}))
+
+    elif args.action == "items":
+        url = f"http://{ip_port}/webapi/entry.cgi"
+        params = {
+            "api": "SYNO.FotoTeam.Browse.Item",
+            "method": "list",
+            "version": 1,
+            "SynoToken": token,
+            "offset": 0,
+            "limit": 100,
+            "folder_id": args.folder,
+            "additional": '["thumbnail", "resolution"]'
+        }
+        query = urllib.parse.urlencode(params)
+        full_url = f"{url}?{query}"
+        
+        status, body, _ = make_request(full_url, method="GET")
+        if status != 200:
+            print(json.dumps({"success": False, "error": f"HTTP Error {status}"}))
+            return
+        
+        try:
+            res_json = json.loads(body.decode("utf-8", errors="ignore"))
+            print(json.dumps(res_json, ensure_ascii=False))
+        except Exception as e:
+            print(json.dumps({"success": False, "error": str(e)}))
 
 def cmd_login(args):
     cookie_str = args.cookie
@@ -1497,6 +1553,54 @@ def handle_tui_action(choice):
                 if pwd:
                     out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
                     cmd_file_download(pwd, out_dir)
+                    
+        elif choice == 10:  # 春晖图库共享空间 (Campus Gallery)
+            print("请选择操作:")
+            print("  1. 获取共享文件夹列表 (List Folders)")
+            print("  2. 获取指定文件夹下的照片 (List Photos)")
+            op = input("选择 (1-2) > ").strip()
+            if op == '1':
+                print(f"\n{C_BOLD}{C_GREEN}=== 春晖图库共享文件夹列表 ==={C_RESET}")
+                ip_port = "10.181.201.188:5000"
+                token = "zmwdE4vqUthmo"
+                url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Folder&method=list&version=1&SynoToken={token}&offset=0&limit=100&id=1&additional=%5B%22thumbnail%22%5D"
+                status, body, _ = make_request(url, method="GET")
+                if status == 200:
+                    try:
+                        res = json.loads(body.decode("utf-8", errors="ignore"))
+                        if res.get("success"):
+                            folders = res.get("data", {}).get("list", [])
+                            for f in folders:
+                                print(f"  📁 {C_YELLOW}{f.get('name')}{C_RESET} (ID: {C_GREEN}{f.get('id')}{C_RESET})")
+                        else:
+                            print("  API 返回失败:", res.get("error"))
+                    except Exception as e:
+                        print("  解析响应异常:", e)
+                else:
+                    print("  连接群晖服务器失败, Code:", status)
+            elif op == '2':
+                fid = input("请输入群晖文件夹 ID > ").strip()
+                if fid.isdigit():
+                    print(f"\n{C_BOLD}{C_GREEN}=== 文件夹 ID: {fid} 照片列表 ==={C_RESET}")
+                    ip_port = "10.181.201.188:5000"
+                    token = "zmwdE4vqUthmo"
+                    url = f"http://{ip_port}/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Item&method=list&version=1&SynoToken={token}&offset=0&limit=100&folder_id={fid}"
+                    status, body, _ = make_request(url, method="GET")
+                    if status == 200:
+                        try:
+                            res = json.loads(body.decode("utf-8", errors="ignore"))
+                            if res.get("success"):
+                                items = res.get("data", {}).get("list", [])
+                                for item in items:
+                                    print(f"  📷 {C_CYAN}{item.get('filename')}{C_RESET} (ID: {item.get('id')})")
+                                    thumb_url = f"http://{ip_port}/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={item.get('id')}&size=m"
+                                    print(f"     └─ 缩略图: {C_GREY}{thumb_url}{C_RESET}")
+                            else:
+                                print("  API 返回失败:", res.get("error"))
+                        except Exception as e:
+                            print("  解析响应异常:", e)
+                    else:
+                        print("  连接群晖服务器失败, Code:", status)
     except Exception as e:
         log_error(f"TUI 操作执行出错: {e}")
     
@@ -1521,6 +1625,7 @@ def run_tui():
         ("寝室查询与扣分 (Dormitory Info)", f"{cmd_prefix} bedroom"),
         ("校园失物招领 (Lost & Found)", f"{cmd_prefix} lostfound"),
         ("文件寄存与提取 (File Station)", f"{cmd_prefix} file"),
+        ("春晖图库共享空间 (Campus Gallery)", f"{cmd_prefix} gallery"),
         ("退出程序 (Exit)", "")
     ]
     
@@ -1645,6 +1750,17 @@ def main():
     parser_lf.add_argument("--download", "-d", action="store_true", help="是否下载该失物招领关联的图片或多媒体附件")
     parser_lf.add_argument("--out", type=str, default=".", help="指定文件的下载保存目录")
 
+    # gallery command
+    parser_gal = subparsers.add_parser("gallery", help="查询春晖图库共享空间")
+    gal_subparsers = parser_gal.add_subparsers(dest="action", help="图库操作")
+    
+    # gallery folders
+    parser_gal_folders = gal_subparsers.add_parser("folders", help="获取根目录下共享文件夹列表")
+    
+    # gallery items
+    parser_gal_items = gal_subparsers.add_parser("items", help="获取指定文件夹下的照片")
+    parser_gal_items.add_argument("--folder", type=int, required=True, help="群晖文件夹 ID")
+
     args = parser.parse_args()
 
     if args.command == "bedroom" and not getattr(args, "action", None):
@@ -1652,6 +1768,9 @@ def main():
         sys.exit(0)
     elif args.command == "file" and not getattr(args, "action", None):
         parser_file.print_help()
+        sys.exit(0)
+    elif args.command == "gallery" and not getattr(args, "action", None):
+        parser_gal.print_help()
         sys.exit(0)
 
     if args.command == "login":
@@ -1674,6 +1793,8 @@ def main():
         cmd_bedroom(args)
     elif args.command == "lostfound" or args.command == "lf":
         cmd_lostfound(args)
+    elif args.command == "gallery":
+        cmd_gallery(args)
     else:
         parser.print_help()
 
