@@ -23,23 +23,97 @@ ctk.set_appearance_mode("System")  # System, Dark, Light
 ctk.set_default_color_theme("blue")  # blue, green, dark-blue
 
 def display_markdown_in_textbox(widget, md_text):
-    widget.configure(state="normal")
+    widget.configure(state="normal", wrap="none")
     widget.delete("0.0", "end")
     
-    family = "Courier"
+    # 获取底层的 tk.Text
     textbox_core = getattr(widget, "_textbox", widget)
     
-    # 重新配置所有 Tag 属性
-    textbox_core.tag_config("h1", font=(family, 20, "bold"), foreground="#4caf50")
-    textbox_core.tag_config("h2", font=(family, 17, "bold"), foreground="#4caf50")
-    textbox_core.tag_config("h3", font=(family, 15, "bold"), foreground="#00adb5")
-    textbox_core.tag_config("h4", font=(family, 14, "bold"), foreground="#00adb5")
-    textbox_core.tag_config("bold", font=(family, 14, "bold"))
-    textbox_core.tag_config("link", font=(family, 14, "underline"), foreground="#00adb5")
-    textbox_core.tag_config("table_sep", font=(family, 14), foreground="#56b6c2")
-    textbox_core.tag_config("table_header", font=(family, 14, "bold"), foreground="#00adb5")
-    textbox_core.tag_config("img", font=(family, 14, "bold"), foreground="#d19a66")
+    # 尝试配置一个对中文对齐较好的等宽字体，回退到 Courier
+    font_family = "Menlo" if "Menlo" in tk.font.families() else "Courier"
     
+    # 重新配置所有 Tag 属性
+    textbox_core.tag_config("h1", font=(font_family, 20, "bold"), foreground="#4caf50")
+    textbox_core.tag_config("h2", font=(font_family, 17, "bold"), foreground="#4caf50")
+    textbox_core.tag_config("h3", font=(font_family, 15, "bold"), foreground="#00adb5")
+    textbox_core.tag_config("h4", font=(font_family, 14, "bold"), foreground="#00adb5")
+    textbox_core.tag_config("bold", font=(font_family, 14, "bold"))
+    textbox_core.tag_config("link", font=(font_family, 14, "underline"), foreground="#1088ff")
+    textbox_core.tag_config("table_sep", font=(font_family, 14), foreground="#56b6c2")
+    textbox_core.tag_config("table_header", font=(font_family, 14, "bold"), foreground="#00adb5")
+    textbox_core.tag_config("img", font=(font_family, 14, "bold"), foreground="#d19a66")
+    
+    # 保存图片引用的字典，防止被垃圾回收
+    if not hasattr(widget, "image_refs"):
+        widget.image_refs = []
+        
+    def download_and_insert_image(url, index_mark):
+        def worker():
+            try:
+                # 请求图片
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    img_data = resp.read()
+                image = Image.open(io.BytesIO(img_data))
+                # 调整图片大小以适应文本框，限制最大宽度/高度
+                max_size = 400
+                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(image)
+                
+                def update_gui():
+                    if widget.winfo_exists():
+                        widget.configure(state="normal")
+                        # 找到标记点插入图片
+                        idx = textbox_core.index(index_mark)
+                        textbox_core.image_create(idx, image=photo)
+                        widget.image_refs.append(photo)
+                        widget.configure(state="disabled")
+                widget.after(0, update_gui)
+            except Exception as e:
+                print("Failed to load image:", url, e)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def parse_inline_elements(text, default_tag=""):
+        ptr = 0
+        while ptr < len(text):
+            # 匹配图片 ![alt](url)
+            img_match = re.match(r'!\[(.*?)\]\((.*?)\)', text[ptr:])
+            if img_match:
+                alt = img_match.group(1) or "图片"
+                url = img_match.group(2)
+                # 生成一个唯一的 mark 以便异步插入图片
+                mark_name = f"img_mark_{len(widget.image_refs)}_{ptr}_{int(time.time()*1000)}"
+                textbox_core.insert("end", f"\n[📷 {alt}]\n", "img")
+                textbox_core.mark_set(mark_name, "end - 1 chars")
+                textbox_core.mark_gravity(mark_name, "left")
+                if url.startswith("http"):
+                    download_and_insert_image(url, mark_name)
+                ptr += img_match.end()
+                continue
+                
+            # 匹配链接 [text](url)
+            link_match = re.match(r'\[(.*?)\]\((.*?)\)', text[ptr:])
+            if link_match:
+                link_text = link_match.group(1)
+                widget.insert("end", link_text, "link")
+                ptr += link_match.end()
+                continue
+                
+            # 匹配加粗 **text**
+            bold_match = re.match(r'\*\*(.*?)\*\*', text[ptr:])
+            if bold_match:
+                bold_text = bold_match.group(1)
+                widget.insert("end", bold_text, "bold")
+                ptr += bold_match.end()
+                continue
+                
+            char = text[ptr]
+            if default_tag:
+                widget.insert("end", char, default_tag)
+            else:
+                widget.insert("end", char)
+            ptr += 1
+
     lines = md_text.split('\n')
     is_table_header = True
     
@@ -57,50 +131,29 @@ def display_markdown_in_textbox(widget, md_text):
             widget.insert("end", line[5:] + "\n", "h4")
             continue
             
-        if '|' in line and '---' in line:
+        # 表格分割线
+        if '|' in line and re.search(r'\|.*---.*\|', line):
             widget.insert("end", line + "\n", "table_sep")
             is_table_header = False
             continue
             
-        if '|' in line:
-            parts = line.split('|')
+        # 表格数据行
+        if '|' in line and line.strip().startswith('|') and line.strip().endswith('|'):
+            # 避免对转义的 \| 进行分割
+            parts = re.split(r'(?<!\\)\|', line)
             widget.insert("end", "|", "table_sep")
             for part in parts[1:-1]:
-                tag = "table_header" if is_table_header else "bold" if "**" in part else ""
-                clean_part = part.replace("**", "")
-                widget.insert("end", clean_part, tag)
+                part = part.replace('\\|', '|') # 还原转义的 |
+                tag = "table_header" if is_table_header else ""
+                parse_inline_elements(part, tag)
                 widget.insert("end", "|", "table_sep")
             widget.insert("end", "\n")
             continue
             
+        # 不是表格内容，重置表头状态
         is_table_header = True
         
-        ptr = 0
-        while ptr < len(line):
-            img_match = re.match(r'\!\[(.*?)\]\((.*?)\)', line[ptr:])
-            if img_match:
-                alt = img_match.group(1) or "图片"
-                widget.insert("end", f" [📷 图片: {alt}] ", "img")
-                ptr += img_match.end()
-                continue
-                
-            link_match = re.match(r'\[(.*?)\]\((.*?)\)', line[ptr:])
-            if link_match:
-                text = link_match.group(1)
-                widget.insert("end", text, "link")
-                ptr += link_match.end()
-                continue
-                
-            bold_match = re.match(r'\*\*(.*?)\*\*', line[ptr:])
-            if bold_match:
-                text = bold_match.group(1)
-                widget.insert("end", text, "bold")
-                ptr += bold_match.end()
-                continue
-                
-            widget.insert("end", line[ptr])
-            ptr += 1
-            
+        parse_inline_elements(line)
         widget.insert("end", "\n")
         
     widget.configure(state="disabled")
@@ -2188,6 +2241,15 @@ class GalleryFrame(ctk.CTkFrame):
                 req_f = urllib.request.Request(f_url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req_f, timeout=5) as response:
                     data_f = json.loads(response.read().decode("utf-8"))
+                    
+                    if data_f.get("success") and not data_f.get("data", {}).get("list"):
+                        f_url_p = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.Foto.Browse.Folder&method=list&version=1&SynoToken={token}&offset=0&limit=100&id={cur_id}&additional=%5B%22thumbnail%22%5D"
+                        req_f_p = urllib.request.Request(f_url_p, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(req_f_p, timeout=5) as resp_p:
+                            data_f_p = json.loads(resp_p.read().decode("utf-8"))
+                            if data_f_p.get("success") and data_f_p.get("data", {}).get("list"):
+                                data_f = data_f_p
+
                     if data_f.get("success"):
                         results["folders"] = (True, data_f["data"]["list"])
                     else:
@@ -2195,19 +2257,54 @@ class GalleryFrame(ctk.CTkFrame):
             except Exception as e:
                 results["folders"] = (False, str(e))
                 
-            # 拉取照片列表
-            try:
-                i_url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Item&method=list&version=1&SynoToken={token}&offset=0&limit=100&folder_id={cur_id}&additional=%5B%22thumbnail%22%2C%22resolution%22%5D"
-                req_i = urllib.request.Request(i_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req_i, timeout=5) as response:
-                    data_i = json.loads(response.read().decode("utf-8"))
-                    if data_i.get("success"):
-                        results["items"] = (True, data_i["data"]["list"])
+            # 拉取照片列表 — 依次尝试多种方案
+            def _fetch_items(api_name, folder_id, with_additional=True):
+                """返回 (success: bool, list_or_err)"""
+                base = f"http://{ip_port}/photo/webapi/entry.cgi"
+                params = f"api={api_name}&method=list&version=1&SynoToken={token}&offset=0&limit=500&folder_id={folder_id}"
+                if with_additional:
+                    params += "&additional=%5B%22thumbnail%22%2C%22resolution%22%5D"
+                try:
+                    req = urllib.request.Request(f"{base}?{params}", headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                    if data.get("success"):
+                        return True, data.get("data", {}).get("list", [])
                     else:
-                        results["items"] = (True, [])
-            except Exception:
-                results["items"] = (True, [])
-                
+                        code = data.get("error", {}).get("code", "?")
+                        return False, f"API error {code} ({api_name})"
+                except urllib.error.HTTPError as he:
+                    body = he.read().decode("utf-8", errors="ignore")[:300]
+                    return False, f"HTTP {he.code} ({api_name}): {body}"
+                except Exception as e:
+                    return False, str(e)
+
+            # 按优先级逐步回退
+            fallback_chain = [
+                ("SYNO.FotoTeam.Browse.Item", cur_id, True),
+                ("SYNO.FotoTeam.Browse.Item", cur_id, False),  # 去掉 additional
+                ("SYNO.Foto.Browse.Item",     cur_id, True),
+                ("SYNO.Foto.Browse.Item",     cur_id, False),
+            ]
+            items_ok = False
+            items_result = []
+            last_err = ""
+            for api, fid, with_add in fallback_chain:
+                ok, val = _fetch_items(api, fid, with_add)
+                if ok and val:          # 成功且非空
+                    items_ok, items_result = True, val
+                    break
+                elif ok and not val:    # 成功但空列表
+                    items_ok, items_result = True, []
+                    break
+                else:
+                    last_err = val      # 记录最后一次真实错误，继续尝试下一个
+
+            if not items_ok:
+                results["items"] = (False, last_err)
+            else:
+                results["items"] = (True, items_result)
+
             return results
 
         def callback(res):
@@ -2219,9 +2316,16 @@ class GalleryFrame(ctk.CTkFrame):
             items_ok, items_data = res["items"]
             
             if not folders_ok:
-                err = ctk.CTkLabel(self.main_scroll, text=f"无法加载共享文件夹: {folders_data}\n请确认已连接校园局域网。", text_color="red")
+                err = ctk.CTkLabel(self.main_scroll, text=f"无法加载文件夹: {folders_data}\n请确认已连接校园局域网。", text_color="red")
                 err.pack(pady=40)
                 return
+
+            # items 拉取失败时显示具体错误而不是静默空白
+            if not items_ok:
+                err = ctk.CTkLabel(self.main_scroll, text=f"照片列表获取失败:\n{items_data}", text_color="red", wraplength=600)
+                err.pack(pady=20)
+                # 文件夹还是要渲染
+                items_data = []
                 
             has_folders = len(folders_data) > 0
             has_items = len(items_data) > 0
@@ -2317,7 +2421,7 @@ class GalleryFrame(ctk.CTkFrame):
             try:
                 ip_port = "10.181.201.188:5000"
                 token = "zmwdE4vqUthmo"
-                url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={photo_id}&size=m"
+                url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Thumbnail&method=get&version=1&SynoToken={token}&id={photo_id}&size=m"
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=5) as response:
                     img_data = response.read()
@@ -2423,14 +2527,53 @@ class GalleryLightboxWindow(ctk.CTkToplevel):
         
     def load_large_image(self):
         def download_thread():
-            try:
-                ip_port = "10.181.201.188:5000"
-                token = "zmwdE4vqUthmo"
-                url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={self.photo_id}&size=xl"
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=8) as response:
-                    self.large_image_bytes = response.read()
+            import json
+            ip_port = "10.181.201.188:5000"
+            token = "zmwdE4vqUthmo"
+            
+            # fallback_attempts includes tuples of (api_name, url_params_string)
+            fallback_attempts = [
+                ("SYNO.FotoTeam.Thumbnail (xl)", f"api=SYNO.FotoTeam.Thumbnail&method=get&version=1&SynoToken={token}&id={self.photo_id}&size=xl"),
+                ("SYNO.FotoTeam.Thumbnail (l)", f"api=SYNO.FotoTeam.Thumbnail&method=get&version=1&SynoToken={token}&id={self.photo_id}&size=l"),
+                ("SYNO.FotoTeam.Download", f"api=SYNO.FotoTeam.Download&method=download&version=1&SynoToken={token}&unit_id=%5B{self.photo_id}%5D"),
+                ("SYNO.FotoTeam.Thumbnail (m)", f"api=SYNO.FotoTeam.Thumbnail&method=get&version=1&SynoToken={token}&id={self.photo_id}&size=m"),
+            ]
+            
+            img_bytes = None
+            last_err = ""
+            
+            for api_desc, params in fallback_attempts:
+                url = f"http://{ip_port}/photo/webapi/entry.cgi?{params}"
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=8) as response:
+                        data = response.read()
                     
+                    # Check if response is a JSON error
+                    if data.startswith(b'{"'):
+                        try:
+                            res_json = json.loads(data.decode("utf-8", errors="ignore"))
+                            if not res_json.get("success"):
+                                code = res_json.get("error", {}).get("code", "?")
+                                last_err = f"群晖 API 报错: {code} ({api_desc})"
+                                continue
+                        except Exception:
+                            pass
+                    
+                    # Check if image data is valid
+                    try:
+                        Image.open(io.BytesIO(data))
+                        img_bytes = data
+                        break
+                    except Exception as pil_e:
+                        last_err = f"图像数据解码错误: {pil_e} ({api_desc})"
+                        continue
+                except Exception as e:
+                    last_err = f"网络请求异常: {e} ({api_desc})"
+                    continue
+            
+            if img_bytes:
+                self.large_image_bytes = img_bytes
                 def update_ui():
                     try:
                         pil_img = Image.open(io.BytesIO(self.large_image_bytes))
@@ -2452,13 +2595,11 @@ class GalleryLightboxWindow(ctk.CTkToplevel):
                     except Exception as e:
                         if self.image_label.winfo_exists():
                             self.image_label.configure(text=f"图片渲染解码失败: {e}", text_color="red")
-                            
                 self.after(0, update_ui)
-            except Exception as e:
-                err_msg = str(e)
+            else:
                 def fallback():
                     if self.image_label.winfo_exists():
-                        self.image_label.configure(text=f"照片下载失败: {err_msg}\n请检查局域网连接状态。", text_color="red")
+                        self.image_label.configure(text=f"照片加载失败: {last_err}\n请检查局域网连接状态。", text_color="red")
                 self.after(0, fallback)
                 
         threading.Thread(target=download_thread, daemon=True).start()
