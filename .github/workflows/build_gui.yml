@@ -23,11 +23,11 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install customtkinter Pillow pyinstaller
+        pip install pywebview pythonnet pyinstaller
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --noconsole --name chunhui-gui-win --icon=app.ico main_gui.py
+        pyinstaller --onefile --noconsole --name chunhui-gui-win --icon=app.ico --copy-metadata pywebview main_gui.py
 
     - name: Create Artifact
       uses: actions/upload-artifact@v4
@@ -49,11 +49,11 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install customtkinter Pillow pyinstaller
+        pip install pywebview pyobjc-framework-Cocoa pyobjc-framework-WebKit pyinstaller
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --noconsole --name chunhui-gui-mac --icon=app.icns main_gui.py
+        pyinstaller --onefile --noconsole --name chunhui-gui-mac --icon=app.icns --copy-metadata pywebview main_gui.py
 
     - name: Compress macOS Application
       run: |

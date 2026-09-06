@@ -52,6 +52,10 @@ def save_session(session):
     try:
         with open(SESSION_FILE, "w", encoding="utf-8") as f:
             json.dump(session, f, ensure_ascii=False, indent=2)
+        try:
+            os.chmod(SESSION_FILE, 0o600)
+        except Exception:
+            pass
         return True
     except Exception as e:
         log_error(f"保存会话文件失败: {e}")
@@ -61,13 +65,14 @@ def make_request(url_path, method="GET", data=None, headers=None, follow_redirec
     url = f"{BASE_URL}{url_path}" if url_path.startswith("/") else url_path
     try:
         parsed = urllib.parse.urlparse(url)
-        encoded_path = urllib.parse.quote(parsed.path)
+        encoded_path = urllib.parse.quote(urllib.parse.unquote(parsed.path), safe='/:@&=+$,')
+        encoded_query = urllib.parse.quote(urllib.parse.unquote(parsed.query), safe='/:@&=+$,?%')
         url = urllib.parse.urlunparse((
             parsed.scheme,
             parsed.netloc,
             encoded_path,
             parsed.params,
-            parsed.query,
+            encoded_query,
             parsed.fragment
         ))
     except Exception:
@@ -221,10 +226,9 @@ class HTMLToMarkdown(HTMLParser):
         line = self.current_line.strip()
         if line:
             self.output.append(self.current_line.rstrip())
-            self.current_line = ""
-        elif self.current_line == "":
-            if self.output and self.output[-1] != "":
-                self.output.append("")
+        elif self.output and self.output[-1] != "":
+            self.output.append("")
+        self.current_line = ""
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
@@ -309,7 +313,7 @@ class HTMLToMarkdown(HTMLParser):
     def handle_endtag(self, tag):
         tag = tag.lower()
         if tag in ('style', 'script'):
-            self.ignore_data = True
+            self.ignore_data = False
             return
         if self.ignore_data:
             return
@@ -551,6 +555,17 @@ def extract_attachment_links(html_content):
                 attachment_links.append(full_url)
     return attachment_links
 
+def sanitize_output_filename(filename, fallback):
+    if filename is None:
+        filename = ""
+    filename = urllib.parse.unquote(str(filename)).replace("\x00", "").strip()
+    filename = filename.replace("\\", "/")
+    parts = [part for part in filename.split("/") if part not in ("", ".", "..")]
+    safe_name = parts[-1] if parts else ""
+    if not safe_name:
+        safe_name = fallback
+    return safe_name
+
 def download_attachments(attachment_links, out_dir="."):
     if not attachment_links:
         log_warn("该详情页面中未检测到任何可供下载的附件或多媒体。")
@@ -559,9 +574,7 @@ def download_attachments(attachment_links, out_dir="."):
     log_info(f"发现 {len(attachment_links)} 个可供下载的文件，开始下载...")
     for i, att_url in enumerate(attachment_links):
         filename = att_url.split('/')[-1].split('?')[0]
-        filename = urllib.parse.unquote(filename)
-        if not filename:
-            filename = f"attachment_{i+1}"
+        filename = sanitize_output_filename(filename, f"attachment_{i+1}")
         
         if out_dir != ".":
             os.makedirs(out_dir, exist_ok=True)
@@ -698,6 +711,8 @@ def parse_teachers_and_display(html_content):
                 print(f"  {row_str}")
 
 def find_class_id(grade_id, class_query):
+    if class_query is None or not str(class_query).strip():
+        return None
     status, body, _ = make_request("/subjectArrangement/getClassFromGradeForSelect/", method="POST", data={"theGradeID": grade_id})
     if status != 200:
         log_error(f"无法获取班级列表。HTTP Code: {status}, Body: {body.decode('utf-8', errors='ignore')}")
@@ -1166,6 +1181,9 @@ def cmd_file_upload(file_path):
     if not os.path.exists(file_path):
         log_error(f"本地文件不存在: {file_path}")
         return
+    if not os.path.isfile(file_path):
+        log_error(f"指定路径不是文件: {file_path}")
+        return
         
     filename = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
@@ -1256,6 +1274,7 @@ def cmd_file_download(password, out_dir="."):
             return
             
         download_url = f"/static/fileaccess/{file_path_name}"
+        file_name = sanitize_output_filename(file_name, "downloaded_file")
         
         out_path = out_dir if out_dir else "."
         if out_path != ".":
@@ -1266,9 +1285,12 @@ def cmd_file_download(password, out_dir="."):
         
         status_dl, body_dl, _ = make_request(download_url, method="GET")
         if status_dl == 200:
-            with open(target_path, "wb") as f_dl:
-                f_dl.write(body_dl)
-            log_success(f"文件已成功保存至: {target_path} (大小: {len(body_dl)} 字节)")
+            try:
+                with open(target_path, "wb") as f_dl:
+                    f_dl.write(body_dl)
+                log_success(f"文件已成功保存至: {target_path} (大小: {len(body_dl)} 字节)")
+            except Exception as e_dl:
+                log_error(f"保存文件 {target_path} 失败: {e_dl}")
         else:
             log_error(f"下载文件失败 (HTTP Code: {status_dl})")
             
@@ -1368,6 +1390,35 @@ def cmd_news(args):
         print(f"      {C_BLUE}┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄{C_RESET}")
     print(f"{C_GREY}提示: 使用 `python3 ch_cli.py news --show <文章ID>` 阅读正文内容。{C_RESET}\n")
 
+DORM_MAPPING = {
+    "1": "3号楼", "2": "4号楼", "3": "5号楼", "4": "6号楼",
+    "5": "7号楼", "6": "8号楼", "7": "9号楼", "8": "10号楼", "9": "11号楼"
+}
+
+def resolve_dorm(dorm_input):
+    s = str(dorm_input).strip() if dorm_input is not None else ""
+    if not s:
+        return "1", DORM_MAPPING["1"]
+        
+    if s in DORM_MAPPING:
+        return s, DORM_MAPPING[s]
+        
+    for d_id, d_name in sorted(DORM_MAPPING.items(), key=lambda x: len(x[1]), reverse=True):
+        if d_name in s or s in d_name:
+            return d_id, d_name
+            
+    m = re.search(r'\d+', s)
+    if m:
+        num = m.group(0)
+        target_building = f"{num}号楼"
+        for d_id, d_name in DORM_MAPPING.items():
+            if d_name == target_building:
+                return d_id, d_name
+        if num in DORM_MAPPING:
+            return num, DORM_MAPPING[num]
+            
+    return s, DORM_MAPPING.get(s, f"未知楼宇(ID:{s})")
+
 def cmd_bedroom(args):
     if args.action == "class":
         grade = args.grade
@@ -1400,18 +1451,7 @@ def cmd_bedroom(args):
             log_warn("未查到该班级的寝室分配数据。")
             
     elif args.action == "hygiene":
-        dorm_mapping = {
-            "1": "3号楼", "2": "4号楼", "3": "5号楼", "4": "6号楼", "5": "7号楼", "6": "8号楼", "7": "9号楼", "8": "10号楼", "9": "11号楼"
-        }
-        
-        # 楼宇输入映射
-        dorm_id = args.dorm
-        for d_id, d_name in dorm_mapping.items():
-            if d_id in args.dorm or d_name in args.dorm:
-                dorm_id = d_id
-                break
-                
-        dorm_name = dorm_mapping.get(dorm_id, f"未知楼宇(ID:{dorm_id})")
+        dorm_id, dorm_name = resolve_dorm(args.dorm)
         
         # 时间范围处理
         start_date = args.start
@@ -1591,61 +1631,7 @@ def cmd_lostfound(args):
         print(f"      {C_BLUE}┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄{C_RESET}")
     print(f"{C_GREY}提示: 使用 `python3 ch_cli.py lostfound --show <ID>` 查看招领联系方式等详情。{C_RESET}\n")
 
-def cmd_gallery(args):
-    ip_port = "10.181.201.188:5000"
-    token = "zmwdE4vqUthmo"
-    
-    if args.action == "folders":
-        url = f"http://{ip_port}/photo/webapi/entry.cgi"
-        params = {
-            "api": "SYNO.FotoTeam.Browse.Folder",
-            "method": "list",
-            "version": 1,
-            "SynoToken": token,
-            "offset": 0,
-            "limit": 100,
-            "id": 1,
-            "additional": '["thumbnail"]'
-        }
-        query = urllib.parse.urlencode(params)
-        full_url = f"{url}?{query}"
-        
-        status, body, _ = make_request(full_url, method="GET")
-        if status != 200:
-            print(json.dumps({"success": False, "error": f"HTTP Error {status}"}))
-            return
-        
-        try:
-            res_json = json.loads(body.decode("utf-8", errors="ignore"))
-            print(json.dumps(res_json, ensure_ascii=False))
-        except Exception as e:
-            print(json.dumps({"success": False, "error": str(e)}))
 
-    elif args.action == "items":
-        url = f"http://{ip_port}/photo/webapi/entry.cgi"
-        params = {
-            "api": "SYNO.FotoTeam.Browse.Item",
-            "method": "list",
-            "version": 1,
-            "SynoToken": token,
-            "offset": 0,
-            "limit": 100,
-            "folder_id": args.folder,
-            "additional": '["thumbnail", "resolution"]'
-        }
-        query = urllib.parse.urlencode(params)
-        full_url = f"{url}?{query}"
-        
-        status, body, _ = make_request(full_url, method="GET")
-        if status != 200:
-            print(json.dumps({"success": False, "error": f"HTTP Error {status}"}))
-            return
-        
-        try:
-            res_json = json.loads(body.decode("utf-8", errors="ignore"))
-            print(json.dumps(res_json, ensure_ascii=False))
-        except Exception as e:
-            print(json.dumps({"success": False, "error": str(e)}))
 
 def cmd_login(args):
     cookie_str = args.cookie
@@ -1728,13 +1714,13 @@ def get_key_unix():
     try:
         tty.setraw(fd)
         ch = os.read(fd, 8)
-        if ch == b'\x1b[A':
+        if ch in (b'\x1b[A', b'\x1bOA'):
             return 'up'
-        elif ch == b'\x1b[B':
+        elif ch in (b'\x1b[B', b'\x1bOB'):
             return 'down'
-        elif ch == b'\x1b[C':
+        elif ch in (b'\x1b[C', b'\x1bOC'):
             return 'right'
-        elif ch == b'\x1b[D':
+        elif ch in (b'\x1b[D', b'\x1bOD'):
             return 'left'
         elif ch == b'\x1b':
             return 'esc'
@@ -1899,53 +1885,7 @@ def handle_tui_action(choice):
                     out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
                     cmd_file_download(pwd, out_dir)
                     
-        elif choice == 10:  # 春晖图库共享空间 (Campus Gallery)
-            print("请选择操作:")
-            print("  1. 获取共享文件夹列表 (List Folders)")
-            print("  2. 获取指定文件夹下的照片 (List Photos)")
-            op = input("选择 (1-2) > ").strip()
-            if op == '1':
-                print(f"\n{C_BOLD}{C_GREEN}=== 春晖图库共享文件夹列表 ==={C_RESET}")
-                ip_port = "10.181.201.188:5000"
-                token = "zmwdE4vqUthmo"
-                url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Folder&method=list&version=1&SynoToken={token}&offset=0&limit=100&id=1&additional=%5B%22thumbnail%22%5D"
-                status, body, _ = make_request(url, method="GET")
-                if status == 200:
-                    try:
-                        res = json.loads(body.decode("utf-8", errors="ignore"))
-                        if res.get("success"):
-                            folders = res.get("data", {}).get("list", [])
-                            for f in folders:
-                                print(f"  📁 {C_YELLOW}{f.get('name')}{C_RESET} (ID: {C_GREEN}{f.get('id')}{C_RESET})")
-                        else:
-                            print("  API 返回失败:", res.get("error"))
-                    except Exception as e:
-                        print("  解析响应异常:", e)
-                else:
-                    print("  连接群晖服务器失败, Code:", status)
-            elif op == '2':
-                fid = input("请输入群晖文件夹 ID > ").strip()
-                if fid.isdigit():
-                    print(f"\n{C_BOLD}{C_GREEN}=== 文件夹 ID: {fid} 照片列表 ==={C_RESET}")
-                    ip_port = "10.181.201.188:5000"
-                    token = "zmwdE4vqUthmo"
-                    url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Item&method=list&version=1&SynoToken={token}&offset=0&limit=100&folder_id={fid}"
-                    status, body, _ = make_request(url, method="GET")
-                    if status == 200:
-                        try:
-                            res = json.loads(body.decode("utf-8", errors="ignore"))
-                            if res.get("success"):
-                                items = res.get("data", {}).get("list", [])
-                                for item in items:
-                                    print(f"  📷 {C_CYAN}{item.get('filename')}{C_RESET} (ID: {item.get('id')})")
-                                    thumb_url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.Foto.Thumbnail&method=get&version=1&SynoToken={token}&id={item.get('id')}\u0026size=m"
-                                    print(f"     └─ 缩略图: {C_GREY}{thumb_url}{C_RESET}")
-                            else:
-                                print("  API 返回失败:", res.get("error"))
-                        except Exception as e:
-                            print("  解析响应异常:", e)
-                    else:
-                        print("  连接群晖服务器失败, Code:", status)
+
     except Exception as e:
         log_error(f"TUI 操作执行出错: {e}")
     
@@ -1970,7 +1910,6 @@ def run_tui():
         ("寝室查询与扣分 (Dormitory Info)", f"{cmd_prefix} bedroom"),
         ("校园失物招领 (Lost & Found)", f"{cmd_prefix} lostfound"),
         ("文件寄存与提取 (File Station)", f"{cmd_prefix} file"),
-        ("春晖图库共享空间 (Campus Gallery)", f"{cmd_prefix} gallery"),
         ("退出程序 (Exit)", "")
     ]
     
@@ -1979,7 +1918,7 @@ def run_tui():
         # 清屏
         os.system('cls' if os.name == 'nt' else 'clear')
         print(f"{C_BOLD}{C_CYAN}=== 春晖中学校园网 CLI/TUI 工具 ==={C_RESET}")
-        print("使用 [↑/↓] 键移动光标，[Enter] 键确认选择，也可以输入 1-9 直接跳转\n")
+        print("使用 [↑/↓] 键移动光标，[Enter] 键确认选择\n")
         
         for idx, (option, cmd) in enumerate(options):
             cmd_desc = f" [{cmd}]" if cmd else ""
@@ -1989,19 +1928,14 @@ def run_tui():
                 print(f"    {option:<36}{C_GREY}{cmd_desc}{C_RESET}")
                 
         key = getkey()
-        if key == 'up':
+        if key in ('up', '\x1b[A', '\x1bOA'):
             selected_idx = (selected_idx - 1) % len(options)
-        elif key == 'down':
+        elif key in ('down', '\x1b[B', '\x1bOB'):
             selected_idx = (selected_idx + 1) % len(options)
-        elif key == 'enter':
+        elif key in ('enter', '\r', '\n'):
             if selected_idx == len(options) - 1:
                 break
             else:
-                handle_tui_action(selected_idx)
-        elif key.isdigit():
-            val = int(key)
-            if 1 <= val <= 9:
-                selected_idx = val - 1
                 handle_tui_action(selected_idx)
         elif key == 'q' or key == 'esc':
             break
@@ -2095,16 +2029,7 @@ def main():
     parser_lf.add_argument("--download", "-d", action="store_true", help="是否下载该失物招领关联的图片或多媒体附件")
     parser_lf.add_argument("--out", type=str, default=".", help="指定文件的下载保存目录")
 
-    # gallery command
-    parser_gal = subparsers.add_parser("gallery", help="查询春晖图库共享空间")
-    gal_subparsers = parser_gal.add_subparsers(dest="action", help="图库操作")
-    
-    # gallery folders
-    parser_gal_folders = gal_subparsers.add_parser("folders", help="获取根目录下共享文件夹列表")
-    
-    # gallery items
-    parser_gal_items = gal_subparsers.add_parser("items", help="获取指定文件夹下的照片")
-    parser_gal_items.add_argument("--folder", type=int, required=True, help="群晖文件夹 ID")
+
 
     args = parser.parse_args()
 
@@ -2114,9 +2039,7 @@ def main():
     elif args.command == "file" and not getattr(args, "action", None):
         parser_file.print_help()
         sys.exit(0)
-    elif args.command == "gallery" and not getattr(args, "action", None):
-        parser_gal.print_help()
-        sys.exit(0)
+
 
     if args.command == "login":
         cmd_login(args)
@@ -2138,8 +2061,7 @@ def main():
         cmd_bedroom(args)
     elif args.command == "lostfound" or args.command == "lf":
         cmd_lostfound(args)
-    elif args.command == "gallery":
-        cmd_gallery(args)
+
     else:
         parser.print_help()
 

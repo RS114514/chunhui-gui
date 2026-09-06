@@ -1,0 +1,12 @@
+---
+description: CLI 依赖 (ch_cli.py) 维护与同步规范
+globs: ch_cli.py
+alwaysApply: false
+---
+
+# CLI 依赖维护规范
+
+- **源仓库**: `https://github.com/RS114514/chunhui-cil` (本地通常为 `../chunhui-cli`)
+- 本仓库中的 `ch_cli.py` 是从 `chunhui-cil` 同步过来的。
+- 严禁在 `chunhui-gui` 单独修改 `ch_cli.py` 而不同步回 `chunhui-cil` 仓库。
+- 每次在 `chunhui-cil` 中完成 CLI 升级或 Bug 修复后，需将最新版本的 `ch_cli.py` 同步覆盖至本仓库，并执行 `python3 -m py_compile ch_cli.py main_gui.py` 验证。

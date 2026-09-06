@@ -3,7 +3,9 @@
 
 import re
 from html.parser import HTMLParser
-import customtkinter as ctk
+import tkinter as tk
+from tkinter import ttk
+import tkinter.font as tkfont
 
 BASE_URL = "http://10.181.200.3"
 
@@ -318,10 +320,10 @@ def render_html_to_markdown(html):
 
 def display_markdown_in_textbox(widget, md_text):
     widget.configure(state="normal")
-    widget.delete("0.0", "end")
+    widget.delete("1.0", "end")
     
-    family = "Courier"
-    textbox_core = getattr(widget, "_textbox", widget)
+    family = "Menlo" if "Menlo" in tkfont.families() else "Courier"
+    textbox_core = widget
     
     # 重新配置所有 Tag 属性
     textbox_core.tag_config("h1", font=(family, 20, "bold"), foreground="#4caf50")
@@ -445,65 +447,60 @@ DEFAULT_HTML = """<div>
   <p>顺祝端午安康！</p>
 </div>"""
 
-class TestApp(ctk.CTk):
+class TestApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("春晖中学校园网 GUI Markdown 渲染测试")
+        self.title("春晖中学校园网 GUI Markdown 渲染测试 (原生轻量版)")
         self.geometry("960x640")
         
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
         
-        self.top_lbl = ctk.CTkLabel(
+        self.top_lbl = ttk.Label(
             self, 
-            text="春晖校园网 GUI Markdown 展示引擎测试 (Tkinter 免联线版)", 
-            font=ctk.CTkFont(size=18, weight="bold")
+            text="春晖校园网 GUI Markdown 展示引擎测试 (原生 Tkinter 版)", 
+            font=("Helvetica", 15, "bold")
         )
-        self.top_lbl.grid(row=0, column=0, columnspan=2, padx=20, pady=15, sticky="w")
+        self.top_lbl.grid(row=0, column=0, columnspan=2, padx=20, pady=12, sticky="w")
 
-        self.left_frame = ctk.CTkFrame(self)
-        self.left_frame.grid(row=1, column=0, padx=(20, 10), pady=10, sticky="nsew")
+        self.left_frame = ttk.Frame(self, padding=10)
+        self.left_frame.grid(row=1, column=0, padx=(15, 5), pady=5, sticky="nsew")
         self.left_frame.grid_columnconfigure(0, weight=1)
         self.left_frame.grid_rowconfigure(1, weight=1)
 
-        self.html_lbl = ctk.CTkLabel(self.left_frame, text="网页 HTML 原始数据 (可在此修改测试)：", font=ctk.CTkFont(size=13, weight="bold"))
-        self.html_lbl.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
+        self.html_lbl = ttk.Label(self.left_frame, text="网页 HTML 原始数据 (可在此修改测试)：", font=("Helvetica", 11, "bold"))
+        self.html_lbl.grid(row=0, column=0, padx=5, pady=(0, 5), sticky="w")
 
-        self.html_text = ctk.CTkTextbox(self.left_frame, font=ctk.CTkFont(size=12))
-        self.html_text.grid(row=1, column=0, padx=15, pady=(5, 10), sticky="nsew")
-        self.html_text.insert("0.0", DEFAULT_HTML)
+        self.html_text = tk.Text(self.left_frame, font=("Helvetica", 11), wrap="word", relief="solid", borderwidth=1)
+        self.html_text.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        self.html_text.insert("1.0", DEFAULT_HTML)
 
-        self.right_frame = ctk.CTkFrame(self)
-        self.right_frame.grid(row=1, column=1, padx=(10, 20), pady=10, sticky="nsew")
+        self.right_frame = ttk.Frame(self, padding=10)
+        self.right_frame.grid(row=1, column=1, padx=(5, 15), pady=5, sticky="nsew")
         self.right_frame.grid_columnconfigure(0, weight=1)
         self.right_frame.grid_rowconfigure(1, weight=1)
 
-        self.md_lbl = ctk.CTkLabel(self.right_frame, text="CTkTextbox 中渲染的 Markdown (等宽富文本效果)：", font=ctk.CTkFont(size=13, weight="bold"))
-        self.md_lbl.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
+        self.md_lbl = ttk.Label(self.right_frame, text="原生 Text 渲染的 Markdown 效果：", font=("Helvetica", 11, "bold"))
+        self.md_lbl.grid(row=0, column=0, padx=5, pady=(0, 5), sticky="w")
 
-        self.md_text = ctk.CTkTextbox(self.right_frame, font=ctk.CTkFont(family="Courier", size=14))
-        self.md_text.grid(row=1, column=0, padx=15, pady=(5, 10), sticky="nsew")
+        family = "Menlo" if "Menlo" in tkfont.families() else "Courier"
+        self.md_text = tk.Text(self.right_frame, font=(family, 11), wrap="word", relief="solid", borderwidth=1)
+        self.md_text.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
 
-        self.control_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.control_frame.grid(row=2, column=0, columnspan=2, padx=20, pady=15, sticky="ew")
+        self.control_frame = ttk.Frame(self, padding=10)
+        self.control_frame.grid(row=2, column=0, columnspan=2, padx=15, pady=10, sticky="ew")
         
-        self.convert_btn = ctk.CTkButton(
+        self.convert_btn = ttk.Button(
             self.control_frame, 
             text="开始测试渲染 ⚡", 
-            fg_color="#00adb5",
-            hover_color="#00888d",
-            font=ctk.CTkFont(size=14, weight="bold"),
             command=self.run_conversion
         )
         self.convert_btn.pack(side="right", padx=10)
 
-        self.reset_btn = ctk.CTkButton(
+        self.reset_btn = ttk.Button(
             self.control_frame, 
             text="恢复默认模板", 
-            width=100, 
-            fg_color="transparent", 
-            border_width=1,
             command=self.reset_template
         )
         self.reset_btn.pack(side="right", padx=10)
@@ -511,15 +508,13 @@ class TestApp(ctk.CTk):
         self.run_conversion()
 
     def run_conversion(self):
-        html = self.html_text.get("0.0", "end").strip()
+        html = self.html_text.get("1.0", "end").strip()
         md = render_html_to_markdown(html)
-        
-        # 使用自定义的富文本渲染器
         display_markdown_in_textbox(self.md_text, md)
 
     def reset_template(self):
-        self.html_text.delete("0.0", "end")
-        self.html_text.insert("0.0", DEFAULT_HTML)
+        self.html_text.delete("1.0", "end")
+        self.html_text.insert("1.0", DEFAULT_HTML)
         self.run_conversion()
 
 if __name__ == "__main__":

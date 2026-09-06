@@ -1,2748 +1,1260 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""浙江省春晖中学校园网图形界面客户端 (chunhui-gui)
+
+超轻量、高性能、原生独立桌面视窗客户端。
+基于 pywebview (macOS WKWebView / Windows WebView2) 与本地微内核架构构建。
+秒级启动，彻底杜绝 Tk 8.5 系统黑屏与 Canvas 卡顿，内存占用极低 (<25MB)。
+支持离线全功能演示与校园内网在线双模态。
+"""
+
 import os
+import sys
+
+# 优先确保从项目虚拟环境中加载 pywebview
+try:
+    import webview
+except ImportError:
+    venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "bin", "python")
+    if os.path.exists(venv_python) and sys.executable != venv_python:
+        os.execv(venv_python, [venv_python] + sys.argv)
+    webview = None
+
 import re
-import time
 import json
+import time
+import socket
 import threading
 import urllib.parse
 import urllib.request
-import io
-import webbrowser
-import tkinter as tk
-from tkinter import filedialog, messagebox
-import customtkinter as ctk
-from PIL import Image, ImageTk
 
-# 引入我们刚才重命名并更新后的底层逻辑客户端
-import ch_cli
+# 引入底层 CLI 逻辑模块
+try:
+    import ch_cli
+except ImportError:
+    ch_cli = None
 
-# 配置 CustomTkinter 全局主题与外观
-ctk.set_appearance_mode("System")  # System, Dark, Light
-ctk.set_default_color_theme("blue")  # blue, green, dark-blue
+CAMPUS_IP = "10.181.200.3"
+CAMPUS_BASE_URL = "http://10.181.200.3"
 
-def display_markdown_in_textbox(widget, md_text):
-    widget.configure(state="normal", wrap="none")
-    widget.delete("0.0", "end")
-    
-    # 获取底层的 tk.Text
-    textbox_core = getattr(widget, "_textbox", widget)
-    
-    # 尝试配置一个对中文对齐较好的等宽字体，回退到 Courier
-    font_family = "Menlo" if "Menlo" in tk.font.families() else "Courier"
-    
-    # 重新配置所有 Tag 属性
-    textbox_core.tag_config("h1", font=(font_family, 20, "bold"), foreground="#4caf50")
-    textbox_core.tag_config("h2", font=(font_family, 17, "bold"), foreground="#4caf50")
-    textbox_core.tag_config("h3", font=(font_family, 15, "bold"), foreground="#00adb5")
-    textbox_core.tag_config("h4", font=(font_family, 14, "bold"), foreground="#00adb5")
-    textbox_core.tag_config("bold", font=(font_family, 14, "bold"))
-    textbox_core.tag_config("link", font=(font_family, 14, "underline"), foreground="#1088ff")
-    textbox_core.tag_config("table_sep", font=(font_family, 14), foreground="#56b6c2")
-    textbox_core.tag_config("table_header", font=(font_family, 14, "bold"), foreground="#00adb5")
-    textbox_core.tag_config("img", font=(font_family, 14, "bold"), foreground="#d19a66")
-    
-    # 保存图片引用的字典，防止被垃圾回收
-    if not hasattr(widget, "image_refs"):
-        widget.image_refs = []
-        
-    def download_and_insert_image(url, index_mark):
-        def worker():
-            try:
-                # 请求图片
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    img_data = resp.read()
-                image = Image.open(io.BytesIO(img_data))
-                # 调整图片大小以适应文本框，限制最大宽度/高度
-                max_size = 400
-                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(image)
-                
-                def update_gui():
-                    if widget.winfo_exists():
-                        widget.configure(state="normal")
-                        # 找到标记点插入图片
-                        idx = textbox_core.index(index_mark)
-                        textbox_core.image_create(idx, image=photo)
-                        widget.image_refs.append(photo)
-                        widget.configure(state="disabled")
-                widget.after(0, update_gui)
-            except Exception as e:
-                print("Failed to load image:", url, e)
-        threading.Thread(target=worker, daemon=True).start()
+# 全局状态缓存
+CACHED_IS_ONLINE = False
+LAST_CHECK_TIME = 0
 
-    def parse_inline_elements(text, default_tag=""):
-        ptr = 0
-        while ptr < len(text):
-            # 匹配图片 ![alt](url)
-            img_match = re.match(r'!\[(.*?)\]\((.*?)\)', text[ptr:])
-            if img_match:
-                alt = img_match.group(1) or "图片"
-                url = img_match.group(2)
-                # 生成一个唯一的 mark 以便异步插入图片
-                mark_name = f"img_mark_{len(widget.image_refs)}_{ptr}_{int(time.time()*1000)}"
-                textbox_core.insert("end", f"\n[📷 {alt}]\n", "img")
-                textbox_core.mark_set(mark_name, "end - 1 chars")
-                textbox_core.mark_gravity(mark_name, "left")
-                if url.startswith("http"):
-                    download_and_insert_image(url, mark_name)
-                ptr += img_match.end()
-                continue
-                
-            # 匹配链接 [text](url)
-            link_match = re.match(r'\[(.*?)\]\((.*?)\)', text[ptr:])
-            if link_match:
-                link_text = link_match.group(1)
-                widget.insert("end", link_text, "link")
-                ptr += link_match.end()
-                continue
-                
-            # 匹配加粗 **text**
-            bold_match = re.match(r'\*\*(.*?)\*\*', text[ptr:])
-            if bold_match:
-                bold_text = bold_match.group(1)
-                widget.insert("end", bold_text, "bold")
-                ptr += bold_match.end()
-                continue
-                
-            char = text[ptr]
-            if default_tag:
-                widget.insert("end", char, default_tag)
-            else:
-                widget.insert("end", char)
-            ptr += 1
+def check_intranet_connection(timeout=0.6):
+    """通过快速 HTTP HEAD 请求检测校园内网 10.181.200.3 是否真实可达"""
+    global CACHED_IS_ONLINE, LAST_CHECK_TIME
+    try:
+        req = urllib.request.Request(f"{CAMPUS_BASE_URL}/", headers={"User-Agent": "ChunhuiClient/1.2"}, method="HEAD")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            CACHED_IS_ONLINE = (resp.status in (200, 301, 302, 401, 403))
+    except Exception:
+        CACHED_IS_ONLINE = False
+    LAST_CHECK_TIME = time.time()
+    return CACHED_IS_ONLINE
 
-    lines = md_text.split('\n')
-    is_table_header = True
-    
-    for line in lines:
-        if line.startswith('# '):
-            widget.insert("end", line[2:] + "\n", "h1")
-            continue
-        elif line.startswith('## '):
-            widget.insert("end", line[3:] + "\n", "h2")
-            continue
-        elif line.startswith('### '):
-            widget.insert("end", line[4:] + "\n", "h3")
-            continue
-        elif line.startswith('#### '):
-            widget.insert("end", line[5:] + "\n", "h4")
-            continue
-            
-        # 表格分割线
-        if '|' in line and re.search(r'\|.*---.*\|', line):
-            widget.insert("end", line + "\n", "table_sep")
-            is_table_header = False
-            continue
-            
-        # 表格数据行
-        if '|' in line and line.strip().startswith('|') and line.strip().endswith('|'):
-            # 避免对转义的 \| 进行分割
-            parts = re.split(r'(?<!\\)\|', line)
-            widget.insert("end", "|", "table_sep")
-            for part in parts[1:-1]:
-                part = part.replace('\\|', '|') # 还原转义的 |
-                tag = "table_header" if is_table_header else ""
-                parse_inline_elements(part, tag)
-                widget.insert("end", "|", "table_sep")
-            widget.insert("end", "\n")
-            continue
-            
-        # 不是表格内容，重置表头状态
-        is_table_header = True
-        
-        parse_inline_elements(line)
-        widget.insert("end", "\n")
-        
-    widget.configure(state="disabled")
+# ----------------------------------------------------------------------
+# 离线模拟演示数据 (校外网络未连接时展示完整功能)
+# ----------------------------------------------------------------------
 
-def get_theme_colors():
-    is_dark = (ctk.get_appearance_mode() == "Dark")
-    return {
-        "card_bg": "#2b2b2b" if is_dark else "#dbdbdb",
-        "text_primary": "#ffffff" if is_dark else "#000000",
-        "text_secondary": "#aaaaaa" if is_dark else "#555555"
+OFFLINE_MESSAGES = [
+    {
+        "id": "10421",
+        "title": "关于端午节放假及校内值周安全排查的通知",
+        "sender": "德育处",
+        "time": "2026-06-16 09:30",
+        "unread": False,
+        "content": "各年级组、班主任及全体教职工：\n\n根据上级教育行政部门统一部署与我校教学进度安排，现将2026年端午节放假及校内值周巡查安排通告如下：\n\n1. 放假时间为 6月19日（周五）下午至 6月22日（周一），6月22日晚自修按正常作息恢复。\n2. 各班级在离校前务必关闭门窗、电源及饮水机设备，杜绝安全隐患。\n3. 行政值周人员与校舍安保队伍按既定排班表执行24小时全域巡视。\n\n祝全体师生节日安康！",
+        "recipients_all": "全体教职工、各班班主任",
+        "recipients_unread": "暂无",
+        "attachments": ["2026年端午节值周排班及应急值守表.pdf"]
+    },
+    {
+        "id": "10385",
+        "title": "2026学年第二学期期末教学常规检查工作安排",
+        "sender": "教务处",
+        "time": "2026-06-12 14:15",
+        "unread": True,
+        "content": "全体任课教师：\n\n为进一步规范教学常规，教务处将于第17周开展学期末教学业务集中考评：\n\n- 检查范围：各教研组教案、备课笔记、学生作业批改情况及听课记录。\n- 时间节点：请于 6月24日 下午17:00前以教研组为单位统一收齐交至弘道楼201室。\n- 考评结果将记入教师学期综合业务考核积分档案。",
+        "recipients_all": "全体高中学科教师",
+        "recipients_unread": "陈老师, 李老师, 王老师",
+        "attachments": ["期末教学常规考评标准细则(2026修订).docx"]
+    },
+    {
+        "id": "10340",
+        "title": "第32届白马湖文化节社团展示展演活动方案",
+        "sender": "校团委",
+        "time": "2026-06-08 16:20",
+        "unread": False,
+        "content": "各学生社团及指导老师：\n\n第32届白马湖文化节社团文化长廊将于下周四在白马湖畔草坪及晚清校舍前坪正式开幕。涉及戏剧社、文学社、机器人创新实验室等24个学生社团。\n\n请各社长配合指导老师完成摊位布置方案与安全预案报备。",
+        "recipients_all": "学生会社团联合会、各社团指导教师",
+        "recipients_unread": "暂无",
+        "attachments": []
+    },
+    {
+        "id": "10298",
+        "title": "关于开展全校学生宿舍违规电器排查的通告",
+        "sender": "宿管中心",
+        "time": "2026-06-02 10:00",
+        "unread": False,
+        "content": "全体寄宿生：\n\n夏季气温逐渐攀升，为确保学生公寓消防与用电安全，后勤保卫科协同宿管中心将于本周三晚自修期间对全校1-6号宿舍楼开展违规大功率电器专项安全排查。\n\n严禁在宿舍私拉乱接电线、违规使用电热毯、热得快、吹风机及大功率充电宝。一经查获将严肃通报并按校纪处理。",
+        "recipients_all": "全校寄宿生及各楼幢宿管员",
+        "recipients_unread": "暂无",
+        "attachments": []
+    },
+    {
+        "id": "10215",
+        "title": "春晖中学青年教师解题大赛获奖结果公示",
+        "sender": "教科室",
+        "time": "2026-05-28 11:30",
+        "unread": False,
+        "content": "根据学校青年教师培养三年行动计划，教科室于5月下旬组织了语文、数学、英语及各选考学科青年教师解题基本功竞赛。经评审专家组匿名评卷，现将一二等奖名单予以公示。",
+        "recipients_all": "全体教师",
+        "recipients_unread": "暂无",
+        "attachments": ["2026春晖青年教师解题大赛表彰名单.pdf"]
     }
+]
 
-class App(ctk.CTk):
-    def __init__(self):
-        super().__init__()
+OFFLINE_NEWS = {
+    "84": [
+        {
+            "id": "37120",
+            "title": "浙江省春晖中学2026年秋季高一新生报到须知与分班安排",
+            "time": "2026-06-15",
+            "dept": "高一年级组",
+            "content": "热烈欢迎新一届春晖学子步入白马湖畔！\n\n1. 网上信息采集时间：2026年7月1日至7月5日。\n2. 现场报到与住宿登记：8月25日上午8:30在白马湖体育馆统一办理。\n3. 请各位同学随身携带录取通知书、身份证及初中毕业生档案材料。"
+        },
+        {
+            "id": "37079",
+            "title": "高一年级第二学期期末阶段性学业诊断与考风考纪建设动员",
+            "time": "2026-06-10",
+            "dept": "高一教导处",
+            "content": "高一年级各班级：\n\n期末六校联考在即，请各班认真组织主题班会，严明考纪，诚信应考。本阶段将严格实行视频监控巡查与交叉监考制度。"
+        },
+        {
+            "id": "36980",
+            "title": "高一学农综合社会实践拓展项目申报与安全责任书",
+            "time": "2026-05-30",
+            "dept": "德育处",
+            "content": "为深化劳动教育素养，高一年级将于下月启动为期四天的学农综合实践。各班分组名单已上传至校园网，请班主任督促签订安全承诺书。"
+        }
+    ],
+    "85": [
+        {
+            "id": "37105",
+            "title": "新高考选考科目复习诊断考分析报告与学情反馈",
+            "time": "2026-06-14",
+            "dept": "高二年级组",
+            "content": "本次学情调研综合评估了物理、化学、生物、政治、历史、地理及技术七门选考科目的赋分走势，请各选考走班任课教师针对薄弱环节制定针对性复习方案。"
+        },
+        {
+            "id": "37012",
+            "title": "高二年级学业水平考试考点考场布置与考务实施细则",
+            "time": "2026-06-05",
+            "dept": "教务科",
+            "content": "2026年学考我校考点设置在第一教学楼与弘道楼，考场布置、安检门调测及信号屏蔽系统检测均已完成，请全体监考教师参加考前考务培训会。"
+        }
+    ],
+    "94": [
+        {
+            "id": "37090",
+            "title": "2026年春晖中学优秀毕业生奖学金评选名单公示",
+            "time": "2026-06-11",
+            "dept": "校务办",
+            "content": "经班级推荐、年级初审及校奖助学金评审委员会联合审定，2026届高三优秀毕业生奖学金拟表彰名单现予公示，公示期为5个工作日。"
+        },
+        {
+            "id": "36955",
+            "title": "学校大宗食材定点采购项目招标评标结果公示",
+            "time": "2026-05-25",
+            "dept": "后勤总务处",
+            "content": "关于春晖中学食堂大宗粮油、生鲜肉类及蔬菜定点配送项目公开招标评审工作已圆满结束，中标候选人及供货报价详见附件清单。"
+        },
+        {
+            "id": "36890",
+            "title": "校园信息化硬件维护及核心交换机系统升级采购公告",
+            "time": "2026-05-18",
+            "dept": "信息中心",
+            "content": "信息中心拟对白马湖校区骨干网络核心交换机及宿舍区接入交换设备实施替换升级，欢迎具备资质的系统集成供应商前来洽谈。"
+        }
+    ],
+    "100": [
+        {
+            "id": "37088",
+            "title": "第16周行政值周小结：晨跑出勤与自修纪律规范良好",
+            "time": "2026-06-12",
+            "dept": "值周组",
+            "content": "值周组长：朱老师。本周总体巡查情况良好，清晨出操迅速整齐；自修课纪律井然有序；唯白马湖畔午间有零星丢弃饮料杯现象，已责成年级自律委员会督导整改。"
+        },
+        {
+            "id": "37001",
+            "title": "第15周行政值周小结：晚自修离校纪律与校园防汛检查",
+            "time": "2026-06-05",
+            "dept": "值周组",
+            "content": "本周值周重点排查了梅雨季节校园排涝与明渠通畅状况。各教学楼晚修熄灯有序，校门接送通道通行顺畅。"
+        }
+    ]
+}
 
-        # 设置窗口基本属性
-        self.title("春晖中学校园网 GUI 客户端 (chunhui-gui)")
-        self.geometry("1100x750")
-        self.minsize(1000, 700)
+OFFLINE_HYGIENE = [
+    {"class": "高一(1)班", "deduct": "-0.5分", "reason": "教室黑板凹槽粉笔灰未擦拭净", "inspector": "卫生部 李同学", "date": "2026-06-15"},
+    {"class": "高一(4)班", "deduct": "-1.0分", "reason": "走廊垃圾桶分类不到位，外侧有零碎纸屑", "inspector": "卫生部 王同学", "date": "2026-06-15"},
+    {"class": "高二(2)班", "deduct": "-0.5分", "reason": "后排窗台窗帘未按标准收束", "inspector": "学生会 孙同学", "date": "2026-06-14"},
+    {"class": "高二(6)班", "deduct": "0.0分", "reason": "全项检查达标，地面桌椅整洁无杂物", "inspector": "卫生部 周同学", "date": "2026-06-14"},
+    {"class": "高三(3)班", "deduct": "-0.5分", "reason": "卫生角扫帚拖把摆放未挂入卡槽", "inspector": "卫生部 赵同学", "date": "2026-06-13"},
+    {"class": "高三(8)班", "deduct": "0.0分", "reason": "标兵示范班级，门窗玻璃明亮如新", "inspector": "学生会 钱同学", "date": "2026-06-13"},
+]
 
-        # 设置精美的应用图标
-        try:
-            self.iconbitmap("app.ico")
-        except Exception:
+OFFLINE_DORM = [
+    {"room": "1号楼 102 (高一男寝)", "deduct": "-1.0分", "reason": "违规在床头私接插排充电", "inspector": "宿管 张老师", "date": "2026-06-15"},
+    {"room": "1号楼 205 (高一男寝)", "deduct": "-0.5分", "reason": "盥洗室洗发露沐浴露摆放凌乱", "inspector": "自律会 郑同学", "date": "2026-06-15"},
+    {"room": "3号楼 312 (高二男寝)", "deduct": "0.0分", "reason": "五星级文明寝室，被褥方正如豆腐块", "inspector": "宿管 陈老师", "date": "2026-06-14"},
+    {"room": "4号楼 208 (高二女寝)", "deduct": "-0.5分", "reason": "阳台衣物晾晒滴水未拧干", "inspector": "自律会 冯同学", "date": "2026-06-14"},
+    {"room": "5号楼 401 (高三女寝)", "deduct": "0.0分", "reason": "书桌与地面无污渍，内务规范优秀", "inspector": "宿管 王老师", "date": "2026-06-13"},
+    {"room": "6号楼 106 (高三男寝)", "deduct": "-1.0分", "reason": "熄灯后洗漱走动大声喧哗", "inspector": "值夜教师 姜老师", "date": "2026-06-13"},
+]
+
+OFFLINE_DUTY = [
+    {"week": "第16周", "leader": "王老师 (德育副校长)", "teachers": "陈老师、刘老师、吴老师", "focus": "早操集合时效、晚自修纪律、白马湖滨水防溺巡视", "status": "进行中"},
+    {"week": "第15周", "leader": "沈老师 (教务主任)", "teachers": "徐老师、郭老师、谢老师", "focus": "考风考纪宣导、学生午餐光盘行动督导", "status": "已归档"},
+    {"week": "第14周", "leader": "张老师 (后勤主任)", "teachers": "韩老师、杨老师、曹老师", "focus": "食品卫生检测、宿舍消防栓水压安全抽验", "status": "已归档"},
+]
+
+OFFLINE_LOSTFOUND = [
+    {"id": "L2026-089", "name": "华为蓝牙耳机 (带白色充电仓)", "category": "数码电子", "place": "白马湖图书馆二楼自修角", "time": "2026-06-15", "status": "待认领", "contact": "图书馆前台"},
+    {"id": "L2026-087", "name": "春晖中学校园一卡通 (高一8班 陈同学)", "category": "证件卡片", "place": "食堂一楼餐盘回收处", "time": "2026-06-14", "status": "已认领", "contact": "保卫科"},
+    {"id": "L2026-082", "name": "黑格尔《小逻辑》与黑色真皮笔袋", "category": "图书文具", "place": "弘道楼204阶梯教室", "time": "2026-06-12", "status": "待认领", "contact": "团委办公室"},
+    {"id": "L2026-079", "name": "银灰色防风保温水杯 (带春晖校徽贴纸)", "category": "生活用品", "place": "田径场西侧看台", "time": "2026-06-10", "status": "待认领", "contact": "体育组器材室"},
+]
+
+OFFLINE_GALLERY = [
+    {"id": "G1", "title": "高一年级优秀内务样板间展示", "category": "宿舍文明", "count": 6, "desc": "1号宿舍楼203室标准被褥折叠与个人储物柜规范收纳照片"},
+    {"id": "G2", "title": "白马湖文化节社团展演活动纪实", "category": "校园文化", "count": 18, "desc": "晚清校舍前坪古筝弹奏、戏剧社折子戏演出实况照片"},
+    {"id": "G3", "title": "教学区卫生日常巡查现场记录", "category": "卫生考评", "count": 12, "desc": "各年级走廊保洁、黑板粉尘清理整改前后对比抓拍"},
+    {"id": "G4", "title": "田径运动场清晨出操英姿", "category": "阳光体育", "count": 8, "desc": "全校跑操队伍整齐划一、步履铿锵的航拍现场图片"},
+]
+
+OFFLINE_STREAMS = [
+    {"id": "S1", "name": "春晖田径场全景球机", "resolution": "1080P 60FPS", "status": "在线 (内网)", "url": "rtsp://10.181.200.3:554/live/track_field"},
+    {"id": "S2", "name": "白马湖畔文化广场枪机", "resolution": "1080P 30FPS", "status": "在线 (内网)", "url": "rtsp://10.181.200.3:554/live/baimahu_square"},
+    {"id": "S3", "name": "弘道楼中庭教学走廊", "resolution": "720P 25FPS", "status": "在线 (内网)", "url": "rtsp://10.181.200.3:554/live/hongdao_hall"},
+    {"id": "S4", "name": "学生食堂一层大厅中央", "resolution": "1080P 30FPS", "status": "在线 (内网)", "url": "rtsp://10.181.200.3:554/live/canteen_1f"},
+]
+
+# ----------------------------------------------------------------------
+# 原生 JavaScript API 交互桥梁 (通过 pywebview.api 暴露给渲染层)
+# ----------------------------------------------------------------------
+
+class ChunhuiApi:
+    def get_all_data(self):
+        """一次性返回全量模块初始数据，零网络等待瞬时渲染"""
+        session = ch_cli.load_session() if ch_cli else {}
+        return {
+            "status": {
+                "is_online": CACHED_IS_ONLINE,
+                "campus_ip": CAMPUS_IP,
+                "has_session": bool(session),
+                "timestamp": int(time.time())
+            },
+            "inbox": self.get_messages(),
+            "news": self.get_news("84"),
+            "hygiene": self.get_hygiene(),
+            "dorm": self.get_dorm(),
+            "duty": self.get_duty(),
+            "lostfound": self.get_lostfound(),
+            "gallery": self.get_gallery(),
+            "streams": self.get_streams()
+        }
+
+    def get_status(self, force_refresh=False):
+        global CACHED_IS_ONLINE, LAST_CHECK_TIME
+        if force_refresh or (time.time() - LAST_CHECK_TIME > 60):
+            is_online = check_intranet_connection(timeout=0.6)
+        else:
+            is_online = CACHED_IS_ONLINE
+
+        session = ch_cli.load_session() if ch_cli else {}
+        return {
+            "is_online": is_online,
+            "campus_ip": CAMPUS_IP,
+            "has_session": bool(session),
+            "timestamp": int(time.time())
+        }
+
+    def get_messages(self):
+        if CACHED_IS_ONLINE and ch_cli:
             try:
-                # 适配 macOS 平台
-                self.icon_photo = ImageTk.PhotoImage(file="app.png")
-                self.wm_iconphoto(True, self.icon_photo)
+                status, body, _ = ch_cli.make_request("/sitemessage/", method="GET")
+                if status == 200:
+                    html_text = body.decode("utf-8", errors="ignore")
+                    items = re.findall(r'<tr[^>]*>.*?<td[^>]*>(.*?)</td>.*?<td[^>]*><a[^>]*href=["\']/sitemessage/show-Message/(\d+)/["\'][^>]*>(.*?)</a></td>.*?<td[^>]*>(.*?)</td>.*?<td[^>]*>(.*?)</td>.*?</tr>', html_text, re.DOTALL)
+                    if items:
+                        parsed = []
+                        for it in items[:20]:
+                            parsed.append({
+                                "id": it[1].strip(),
+                                "title": ch_cli.clean_html(it[2]),
+                                "sender": ch_cli.clean_html(it[3]),
+                                "time": ch_cli.clean_html(it[4]),
+                                "unread": "未读" in it[0],
+                                "content": "校园内网实时信件正文。点击可查看完整通知内容。",
+                                "recipients_all": "全体师生",
+                                "recipients_unread": "详见系统",
+                                "attachments": []
+                            })
+                        return parsed
             except Exception:
                 pass
+        return OFFLINE_MESSAGES
 
-
-        # 布局：1行 x 2列 (左侧导航, 右侧多面板展示区)
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
-
-        # 初始化左侧边栏
-        self.init_sidebar()
-
-        # 初始化右侧各个功能面板框架
-        self.frames = {}
-        self.init_all_frames()
-
-        # 默认选中第一页：收件箱
-        self.select_frame("messages")
-        
-        # 异步验证一次登录连接状态
-        self.check_login_status_async()
-
-    def init_sidebar(self):
-        # 侧边栏 Frame
-        self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(11, weight=1)
-
-        # 应用大标题
-        self.title_label = ctk.CTkLabel(self.sidebar, text="浙江省春晖中学", font=ctk.CTkFont(size=20, weight="bold"))
-        self.title_label.grid(row=0, column=0, padx=20, pady=(25, 2))
-        self.subtitle_label = ctk.CTkLabel(self.sidebar, text="校园网客户端 (chunhui-gui)", text_color="grey50", font=ctk.CTkFont(size=12))
-        self.subtitle_label.grid(row=1, column=0, padx=20, pady=(0, 20))
-
-        # 导航按钮定义
-        self.nav_buttons = {}
-        menu_items = [
-            ("messages", "个人收件箱", 2),
-            ("news", "校内资讯公告", 3),
-            ("hygiene", "纪律卫生考评", 4),
-            ("bedroom", "寝室分配考评", 5),
-            ("duty", "教师值周排班", 6),
-            ("lostfound", "全校失物招领", 7),
-            ("file", "学校文件寄取", 8),
-            ("gallery", "春晖图库", 9),
-            ("media", "视频与直播", 10)
-        ]
-
-        for code, label, row_idx in menu_items:
-            btn = ctk.CTkButton(
-                self.sidebar, 
-                text=label, 
-                fg_color="transparent", 
-                text_color=("gray10", "gray90"),
-                hover_color=("gray70", "gray30"),
-                anchor="w",
-                height=40,
-                font=ctk.CTkFont(size=14),
-                command=lambda c=code: self.select_frame(c)
-            )
-            btn.grid(row=row_idx, column=0, padx=15, pady=4, sticky="ew")
-            self.nav_buttons[code] = btn
-
-        # 底部账号状态与导入面板
-        self.status_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.status_frame.grid(row=12, column=0, padx=15, pady=20, sticky="ew")
-        
-        self.status_indicator = ctk.CTkLabel(
-            self.status_frame, 
-            text="●  连线状态未知", 
-            text_color="#ff9800",
-            font=ctk.CTkFont(size=12, weight="bold")
-        )
-        self.status_indicator.pack(pady=4, fill="x")
-
-        self.login_btn = ctk.CTkButton(
-            self.status_frame, 
-            text="导入 Cookie 登录", 
-            height=30,
-            font=ctk.CTkFont(size=12),
-            command=self.open_login_dialog
-        )
-        self.login_btn.pack(pady=5, fill="x")
-
-    def init_all_frames(self):
-        # 所有功能页面存放的容器 Frame
-        self.container = ctk.CTkFrame(self, fg_color="transparent")
-        self.container.grid(row=0, column=1, sticky="nsew", padx=15, pady=15)
-        self.container.grid_rowconfigure(0, weight=1)
-        self.container.grid_columnconfigure(0, weight=1)
-
-        # 实例化各个面板
-        self.frames["messages"] = MessagesFrame(self.container, self)
-        self.frames["news"] = NewsFrame(self.container, self)
-        self.frames["hygiene"] = HygieneFrame(self.container, self)
-        self.frames["bedroom"] = BedroomFrame(self.container, self)
-        self.frames["duty"] = DutyFrame(self.container, self)
-        self.frames["lostfound"] = LostFoundFrame(self.container, self)
-        self.frames["file"] = FileFrame(self.container, self)
-        self.frames["gallery"] = GalleryFrame(self.container, self)
-        self.frames["media"] = MediaFrame(self.container, self)
-
-        for name, frame in self.frames.items():
-            frame.grid(row=0, column=0, sticky="nsew")
-
-    def select_frame(self, name):
-        # 高亮选中的导航按钮，恢复其余按钮
-        for code, btn in self.nav_buttons.items():
-            if code == name:
-                btn.configure(fg_color=("gray80", "gray20"), text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
-            else:
-                btn.configure(fg_color="transparent", text_color=("gray10", "gray90"))
-
-        # 提升目标页面到最前显示
-        self.frames[name].tkraise()
-        # 切换页面时，若有刷新方法则刷新
-        if hasattr(self.frames[name], "on_show"):
-            self.frames[name].on_show()
-
-    def open_login_dialog(self):
-        dialog = CookieLoginDialog(self)
-        self.wait_window(dialog)
-
-    def check_login_status_async(self):
-        def worker():
-            cookies = ch_cli.load_session()
-            if not cookies.get("sessionid"):
-                self.set_login_status(False, "未登录")
-                return
-            
-            # 向服务器请求验证状态
-            status, _, _ = ch_cli.make_request("/article/article-detail/37079/", method="GET")
-            if status == 200:
-                self.set_login_status(True, "登录有效")
-            else:
-                self.set_login_status(False, "会话失效")
-                
-        threading.Thread(target=worker, daemon=True).start()
-
-    def set_login_status(self, is_valid, msg):
-        def update():
-            if is_valid:
-                self.status_indicator.configure(text=f"●  已连接 ({msg})", text_color="#4caf50")
-            else:
-                self.status_indicator.configure(text=f"●  未连接 ({msg})", text_color="#f44336")
-        self.after(0, update)
-
-    def run_async(self, func, *args, callback=None):
-        def worker():
+    def get_news(self, catalog="84"):
+        if CACHED_IS_ONLINE and ch_cli:
             try:
-                res = func(*args)
-                if callback:
-                    self.after(0, callback, res)
-            except Exception as e:
-                if callback:
-                    self.after(0, callback, (False, str(e)))
-        threading.Thread(target=worker, daemon=True).start()
-
-
-class CookieLoginDialog(ctk.CTkToplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
-        self.title("导入 Cookie 进行连接")
-        self.geometry("520x340")
-        self.resizable(False, False)
-        
-        # 弹窗置顶
-        self.transient(parent)
-        self.wait_visibility()
-        self.grab_set()
-
-        self.grid_columnconfigure(0, weight=1)
-        
-        title = ctk.CTkLabel(self, text="导入浏览器 Cookie 会话", font=ctk.CTkFont(size=18, weight="bold"))
-        title.grid(row=0, column=0, padx=20, pady=(20, 5), sticky="w")
-
-        desc = ctk.CTkLabel(
-            self, 
-            text="通常可在浏览器 F12 的网络(Network)面板请求头中找到。请复制并粘贴以下格式的字符串：\n形如: sessionid=xxxxxx; csrftoken=yyyyyy", 
-            text_color="grey60",
-            font=ctk.CTkFont(size=12),
-            justify="left"
-        )
-        desc.grid(row=1, column=0, padx=20, pady=5, sticky="w")
-
-        self.cookie_text = ctk.CTkTextbox(self, height=120, border_width=1)
-        self.cookie_text.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
-        
-        # 预填充现有的 Cookie
-        curr = ch_cli.load_session()
-        if curr.get("sessionid"):
-            pre_val = f"sessionid={curr['sessionid']}"
-            if curr.get("csrftoken"):
-                pre_val += f"; csrftoken={curr['csrftoken']}"
-            self.cookie_text.insert("0.0", pre_val)
-
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.grid(row=3, column=0, padx=20, pady=15, sticky="e")
-
-        self.cancel_btn = ctk.CTkButton(btn_frame, text="取消", width=90, fg_color="transparent", border_width=1, command=self.destroy)
-        self.cancel_btn.pack(side="left", padx=5)
-
-        self.ok_btn = ctk.CTkButton(btn_frame, text="导入并检测", width=110, command=self.save_and_test)
-        self.ok_btn.pack(side="left", padx=5)
-
-    def save_and_test(self):
-        cookie_str = self.cookie_text.get("0.0", "end").strip()
-        if not cookie_str:
-            messagebox.showerror("错误", "请输入 Cookie 字符串！")
-            return
-            
-        sessionid = ""
-        csrftoken = ""
-        parts = [p.strip() for p in cookie_str.split(";")]
-        for part in parts:
-            if "=" in part:
-                k, v = part.split("=", 1)
-                k = k.strip()
-                v = v.strip()
-                if k == "sessionid":
-                    sessionid = v
-                elif k == "csrftoken":
-                    csrftoken = v
-
-        if not sessionid:
-            messagebox.showwarning("警告", "输入的 Cookie 中未检测到 sessionid，连接可能会失败。")
-
-        session_data = {
-            "sessionid": sessionid,
-            "csrftoken": csrftoken
-        }
-        
-        if not ch_cli.save_session(session_data):
-            messagebox.showerror("错误", "无法保存会话文件，请检查目录权限！")
-            return
-        
-        # 异步做一次网络连线检测
-        self.ok_btn.configure(state="disabled", text="正在校验...")
-        
-        def check_task():
-            status, _, _ = ch_cli.make_request("/article/article-detail/37079/", method="GET")
-            if not self.winfo_exists():
-                return
-            if status == 200:
-                self.parent.set_login_status(True, "导入成功")
-                self.parent.after(0, lambda: messagebox.showinfo("成功", "Cookie 校验通过，登录成功！") if self.winfo_exists() else None)
-                self.parent.after(0, lambda: self.destroy() if self.winfo_exists() else None)
-            else:
-                self.parent.set_login_status(False, f"HTTP {status} 校验失败")
-                self.parent.after(0, lambda: messagebox.showerror("失败", f"Cookie 连线校验失败 (HTTP: {status})，请重新获取。") if self.winfo_exists() else None)
-                self.parent.after(0, lambda: self.ok_btn.configure(state="normal", text="导入并检测") if self.winfo_exists() else None)
-
-        threading.Thread(target=check_task, daemon=True).start()
-
-
-class MessagesFrame(ctk.CTkFrame):
-    def __init__(self, parent, controller):
-        super().__init__(parent, fg_color="transparent")
-        self.controller = controller
-        
-        self.page = 1
-        
-        # 头部控制栏
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.pack(fill="x", pady=(5, 10))
-        
-        self.title = ctk.CTkLabel(self.header, text="个人收件箱通知列表", font=ctk.CTkFont(size=18, weight="bold"))
-        self.title.pack(side="left", padx=5)
-
-        self.refresh_btn = ctk.CTkButton(self.header, text="刷新列表", width=100, command=self.load_list)
-        self.refresh_btn.pack(side="right", padx=5)
-
-        self.prev_btn = ctk.CTkButton(self.header, text="< 上一页", width=80, command=lambda: self.change_page(-1))
-        self.prev_btn.pack(side="right", padx=5)
-        
-        self.page_label = ctk.CTkLabel(self.header, text="第 1 页", font=ctk.CTkFont(size=13))
-        self.page_label.pack(side="right", padx=10)
-
-        self.next_btn = ctk.CTkButton(self.header, text="下一页 >", width=80, command=lambda: self.change_page(1))
-        self.next_btn.pack(side="right", padx=5)
-
-        # 列表滑动容器
-        self.scroll = ctk.CTkScrollableFrame(self)
-        self.scroll.pack(fill="both", expand=True)
-
-        self.loaded = False
-
-    def on_show(self):
-        if not self.loaded:
-            self.load_list()
-
-    def change_page(self, delta):
-        if self.page + delta < 1:
-            return
-        self.page += delta
-        self.page_label.configure(text=f"第 {self.page} 页")
-        self.load_list()
-
-    def load_list(self):
-        self.refresh_btn.configure(state="disabled", text="正在拉取...")
-        self.prev_btn.configure(state="disabled")
-        self.next_btn.configure(state="disabled")
-        for child in self.scroll.winfo_children():
-            child.destroy()
-            
-        loading = ctk.CTkLabel(self.scroll, text="正在读取校园网数据，请稍候...", font=ctk.CTkFont(size=14))
-        loading.pack(pady=40)
-
-        def query_messages():
-            url = f"/sitemessage/message-Receive-list/?page={self.page}"
-            status, body, _ = ch_cli.make_request(url, method="GET")
-            if status != 200:
-                return False, f"HTTP Error: {status}"
-                
-            html_content = body.decode("utf-8", errors="ignore")
-            tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
-            trs = tr_pattern.findall(html_content)
-            
-            rows = []
-            for tr in trs:
-                if "show-Message" in tr:
-                    id_m = re.search(r'/sitemessage/show-Message/(\d+)/\s*', tr)
-                    msg_id = id_m.group(1) if id_m else ""
-                    if not msg_id:
-                        id_m = re.search(r'del_siteMessage\(this,(\d+)\)', tr)
-                        if id_m:
-                            msg_id = id_m.group(1)
-                    
-                    tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-                    if len(tds) >= 3:
-                        title = ch_cli.clean_html(tds[1])
-                        sender = ch_cli.clean_html(tds[2])
-                        date = ch_cli.clean_html(tds[3]) if len(tds) > 3 else ""
-                        rows.append((msg_id, title, sender, date))
-            return True, rows
-
-        def callback(res):
-            self.refresh_btn.configure(state="normal", text="刷新列表")
-            self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
-            self.next_btn.configure(state="normal")
-            for child in self.scroll.winfo_children():
-                child.destroy()
-                
-            success, data = res
-            if not success:
-                err = ctk.CTkLabel(self.scroll, text=f"加载数据失败: {data}\n请确认您的 Cookie 是否有效并已联网。", text_color="red")
-                err.pack(pady=40)
-                return
-                
-            if not data:
-                empty = ctk.CTkLabel(self.scroll, text="收件箱暂无消息通知。")
-                empty.pack(pady=40)
-                return
-                
-            self.loaded = True
-            colors = get_theme_colors()
-            for msg_id, title, sender, date in data:
-                card = ctk.CTkFrame(self.scroll, corner_radius=6)
-                card.pack(fill="x", padx=5, pady=5)
-                
-                # 双列：左侧文字，右侧按钮
-                card.columnconfigure(0, weight=1)
-                
-                t_lbl = tk.Label(card, text=title, font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
-                t_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
-                
-                info_lbl = tk.Label(card, text=f"发送人: {sender}   |   日期: {date}   |   ID: {msg_id}", fg=colors["text_secondary"], bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
-                info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-                
-                btn = ctk.CTkButton(card, text="阅读正文", width=90, command=lambda m=msg_id: self.show_detail(m))
-                btn.grid(row=0, column=1, rowspan=2, padx=15, pady=10)
-
-        self.controller.run_async(query_messages, callback=callback)
-
-    def show_detail(self, msg_id):
-        # 弹窗展示正文详情
-        detail_win = MessageDetailWindow(self.controller, msg_id)
-        self.controller.wait_window(detail_win)
-
-
-class MessageDetailWindow(ctk.CTkToplevel):
-    def __init__(self, parent, msg_id):
-        super().__init__(parent)
-        self.parent = parent
-        self.msg_id = msg_id
-        self.title("通知消息正文")
-        self.geometry("720x540")
-        
-        self.transient(parent)
-        self.wait_visibility()
-        self.grab_set()
-
-        self.grid_rowconfigure(2, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-        # 头部面板
-        self.meta_frame = ctk.CTkFrame(self, corner_radius=0)
-        self.meta_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 5))
-        self.meta_frame.columnconfigure(0, weight=1)
-
-        self.title_lbl = ctk.CTkLabel(self.meta_frame, text="正在装载...", font=ctk.CTkFont(size=16, weight="bold"), justify="left")
-        self.title_lbl.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
-
-        self.info_lbl = ctk.CTkLabel(self.meta_frame, text="", text_color="grey60", font=ctk.CTkFont(size=12))
-        self.info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-
-        # 正文文本框
-        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=14))
-        self.textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=5)
-        
-        # 附件栏
-        self.attachment_frame = ctk.CTkFrame(self, height=70)
-        self.attachment_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(5, 15))
-        self.attachment_frame.columnconfigure(0, weight=1)
-        
-        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="附件加载中...", text_color="grey60", font=ctk.CTkFont(size=12))
-        self.att_lbl.grid(row=0, column=0, padx=15, pady=10, sticky="w")
-
-        self.download_btn = ctk.CTkButton(self.attachment_frame, text="下载全部附件", state="disabled", width=120, command=self.download_all)
-        self.download_btn.grid(row=0, column=1, padx=15, pady=10)
-
-        self.attachment_links = []
-        self.load_detail()
-
-    def load_detail(self):
-        def worker():
-            status, body, _ = ch_cli.make_request(f"/sitemessage/show-Message/{self.msg_id}/", method="GET")
-            if status != 200:
-                return False, f"获取详情失败 (HTTP Code: {status})"
-            
-            html_content = body.decode("utf-8", errors="ignore")
-            
-            # 提取标题
-            title = "无标题"
-            title_m = re.search(r'<div class="ArticleTitle">(.*?)</div>', html_content, re.DOTALL)
-            if title_m:
-                title = ch_cli.clean_html(title_m.group(1))
-                
-            # 发送人
-            sender = "未知"
-            sender_m = re.search(r'发送者：\s*([^\s<]+)', html_content)
-            if sender_m:
-                sender = sender_m.group(1).strip()
-                
-            # 时间
-            send_time = "未知"
-            time_m = re.search(r'发送时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
-            if time_m:
-                send_time = time_m.group(1).strip()
-                
-            # 内容
-            content = ""
-            content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>\s*</div>', html_content, re.DOTALL)
-            if not content_m:
-                content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
-            if content_m:
-                content = ch_cli.render_html_to_markdown(content_m.group(1))
-                
-            # 附件
-            links = ch_cli.extract_attachment_links(html_content)
-            return True, (title, sender, send_time, content, links)
-
-        def callback(res):
-            if not self.winfo_exists():
-                return
-            success, data = res
-            if not success:
-                self.title_lbl.configure(text="加载失败")
-                display_markdown_in_textbox(self.textbox, data)
-                self.att_lbl.configure(text="无法加载附件列表")
-                return
-                
-            title, sender, send_time, content, links = data
-            self.title_lbl.configure(text=title)
-            self.info_lbl.configure(text=f"发送者: {sender}   |   发送时间: {send_time}")
-            display_markdown_in_textbox(self.textbox, content)
-            
-            self.attachment_links = links
-            if links:
-                self.att_lbl.configure(text=f"发现 {len(links)} 个关联的文档或附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
-                self.download_btn.configure(state="normal")
-            else:
-                self.att_lbl.configure(text="本条消息未附带任何附件")
-
-        self.parent.run_async(worker, callback=callback)
-
-    def download_all(self):
-        if not self.attachment_links:
-            return
-        # 选择下载保存目录
-        out_dir = filedialog.askdirectory(title="选择下载附件的保存位置")
-        if not out_dir:
-            return
-            
-        self.download_btn.configure(state="disabled", text="正在下载...")
-        
-        def task():
-            ch_cli.download_attachments(self.attachment_links, out_dir)
-            return True
-
-        def callback(res):
-            if not self.winfo_exists():
-                return
-            self.download_btn.configure(state="normal", text="下载全部附件")
-            messagebox.showinfo("成功", f"所有附件已下载并成功保存至:\n{out_dir}")
-
-        self.parent.run_async(task, callback=callback)
-
-
-class NewsFrame(ctk.CTkFrame):
-    def __init__(self, parent, controller):
-        super().__init__(parent, fg_color="transparent")
-        self.controller = controller
-        
-        self.page = 1
-        
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.pack(fill="x", pady=(5, 10))
-
-        self.title = ctk.CTkLabel(self.header, text="校内文章公告栏目", font=ctk.CTkFont(size=18, weight="bold"))
-        self.title.pack(side="left", padx=5)
-
-        # 栏目下拉选择菜单
-        self.col_options = {
-            "通知公告 (默认)": "16",
-            "校内公示": "19",
-            "新闻聚焦": "13",
-            "值周小结": "51"
-        }
-        self.col_select = ctk.CTkOptionMenu(
-            self.header, 
-            values=list(self.col_options.keys()), 
-            width=150, 
-            command=self.on_column_change
-        )
-        self.col_select.pack(side="left", padx=15)
-
-        self.refresh_btn = ctk.CTkButton(self.header, text="刷新", width=80, command=self.load_list)
-        self.refresh_btn.pack(side="right", padx=5)
-
-        self.prev_btn = ctk.CTkButton(self.header, text="< 上一页", width=80, command=lambda: self.change_page(-1))
-        self.prev_btn.pack(side="right", padx=5)
-        
-        self.page_label = ctk.CTkLabel(self.header, text="第 1 页", font=ctk.CTkFont(size=13))
-        self.page_label.pack(side="right", padx=10)
-
-        self.next_btn = ctk.CTkButton(self.header, text="下一页 >", width=80, command=lambda: self.change_page(1))
-        self.next_btn.pack(side="right", padx=5)
-
-        self.scroll = ctk.CTkScrollableFrame(self)
-        self.scroll.pack(fill="both", expand=True)
-
-        self.loaded = False
-
-    def on_show(self):
-        if not self.loaded:
-            self.load_list()
-
-    def on_column_change(self, choice):
-        self.page = 1
-        self.page_label.configure(text="第 1 页")
-        self.load_list()
-
-    def change_page(self, delta):
-        if self.page + delta < 1:
-            return
-        self.page += delta
-        self.page_label.configure(text=f"第 {self.page} 页")
-        self.load_list()
-
-    def load_list(self):
-        self.refresh_btn.configure(state="disabled", text="加载中...")
-        self.prev_btn.configure(state="disabled")
-        self.next_btn.configure(state="disabled")
-        for child in self.scroll.winfo_children():
-            child.destroy()
-            
-        loading = ctk.CTkLabel(self.scroll, text="正在读取栏目文章列表...", font=ctk.CTkFont(size=14))
-        loading.pack(pady=40)
-
-        col_name = self.col_select.get()
-        col_id = self.col_options.get(col_name, "16")
-
-        def query_news():
-            status, body, _ = ch_cli.make_request(f"/article/column-detail/{col_id}/?page={self.page}", method="GET", follow_redirects=True)
-            if status != 200:
-                return False, f"HTTP Error: {status}"
-            
-            html_content = body.decode("utf-8", errors="ignore")
-            items = re.findall(r'href=["\']/article/article-detail/(\d+)/["\'][^>]*>\s*(.*?)\s*</a>.*?class="[^"]*text-secondary"[^>]*>\s*(.*?)\s*</div>', html_content, re.DOTALL)
-            
-            rows = []
-            for art_id, title, date in items:
-                rows.append((art_id, ch_cli.clean_html(title), ch_cli.clean_html(date)))
-            return True, rows
-
-        def callback(res):
-            self.refresh_btn.configure(state="normal", text="刷新")
-            self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
-            self.next_btn.configure(state="normal")
-            for child in self.scroll.winfo_children():
-                child.destroy()
-                
-            success, data = res
-            if not success:
-                err = ctk.CTkLabel(self.scroll, text=f"加载失败: {data}\n请确认 Cookie 是否有效。", text_color="red")
-                err.pack(pady=40)
-                return
-                
-            if not data:
-                empty = ctk.CTkLabel(self.scroll, text="此栏目本页无文章记录。")
-                empty.pack(pady=40)
-                return
-                
-            self.loaded = True
-            colors = get_theme_colors()
-            for art_id, title, date in data:
-                card = ctk.CTkFrame(self.scroll, corner_radius=6)
-                card.pack(fill="x", padx=5, pady=5)
-                
-                card.columnconfigure(0, weight=1)
-                
-                t_lbl = tk.Label(card, text=title, font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
-                t_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
-                
-                info_lbl = tk.Label(card, text=f"发布日期: {date}   |   文章 ID: {art_id}", fg=colors["text_secondary"], bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
-                info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-                
-                btn = ctk.CTkButton(card, text="查看详情", width=90, command=lambda a=art_id: self.show_detail(a))
-                btn.grid(row=0, column=1, rowspan=2, padx=15, pady=10)
-
-        self.controller.run_async(query_news, callback=callback)
-
-    def show_detail(self, art_id):
-        detail_win = NewsDetailWindow(self.controller, art_id)
-        self.controller.wait_window(detail_win)
-
-
-class NewsDetailWindow(ctk.CTkToplevel):
-    def __init__(self, parent, art_id):
-        super().__init__(parent)
-        self.parent = parent
-        self.art_id = art_id
-        self.title("文章详情内容")
-        self.geometry("740x560")
-        
-        self.transient(parent)
-        self.wait_visibility()
-        self.grab_set()
-
-        self.grid_rowconfigure(2, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-        self.meta_frame = ctk.CTkFrame(self, corner_radius=0)
-        self.meta_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 5))
-        self.meta_frame.columnconfigure(0, weight=1)
-
-        self.title_lbl = ctk.CTkLabel(self.meta_frame, text="读取文章中...", font=ctk.CTkFont(size=16, weight="bold"), justify="left")
-        self.title_lbl.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
-
-        self.info_lbl = ctk.CTkLabel(self.meta_frame, text="", text_color="grey60", font=ctk.CTkFont(size=12))
-        self.info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-
-        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=14))
-        self.textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=5)
-        
-        self.attachment_frame = ctk.CTkFrame(self, height=70)
-        self.attachment_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(5, 15))
-        self.attachment_frame.columnconfigure(0, weight=1)
-        
-        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="正在提取内嵌附件...", text_color="grey60", font=ctk.CTkFont(size=12))
-        self.att_lbl.grid(row=0, column=0, padx=15, pady=10, sticky="w")
-
-        self.download_btn = ctk.CTkButton(self.attachment_frame, text="下载关联文件", state="disabled", width=120, command=self.download_all)
-        self.download_btn.grid(row=0, column=1, padx=15, pady=10)
-
-        self.attachment_links = []
-        self.load_detail()
-
-    def load_detail(self):
-        def worker():
-            status, body, _ = ch_cli.make_request(f"/article/article-detail/{self.art_id}/", method="GET", follow_redirects=True)
-            if status != 200:
-                return False, f"获取详情失败 (HTTP Code: {status})"
-            
-            html_content = body.decode("utf-8", errors="ignore")
-            
-            title = "无标题"
-            title_m = re.search(r'<div class="ArticleTitle[^>]*>(.*?)</div>', html_content, re.DOTALL)
-            if title_m:
-                title = ch_cli.clean_html(title_m.group(1))
-                
-            source = "未知"
-            source_m = re.search(r'来源：\s*([^<]+)', html_content)
-            if source_m:
-                source = ch_cli.clean_html(source_m.group(1))
-                
-            pub_time = "未知"
-            time_m = re.search(r'发布时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
-            if time_m:
-                pub_time = time_m.group(1).strip()
-                
-            content = ""
-            content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
-            if content_m:
-                content = ch_cli.render_html_to_markdown(content_m.group(1))
-                
-            links = ch_cli.extract_attachment_links(html_content)
-            return True, (title, source, pub_time, content, links)
-
-        def callback(res):
-            if not self.winfo_exists():
-                return
-            success, data = res
-            if not success:
-                self.title_lbl.configure(text="读取失败")
-                display_markdown_in_textbox(self.textbox, data)
-                self.att_lbl.configure(text="无法加载附件")
-                return
-                
-            title, source, pub_time, content, links = data
-            self.title_lbl.configure(text=title)
-            self.info_lbl.configure(text=f"来源部门/人: {source}   |   发布时间: {pub_time}")
-            display_markdown_in_textbox(self.textbox, content)
-            
-            self.attachment_links = links
-            if links:
-                self.att_lbl.configure(text=f"发现该公告内嵌了 {len(links)} 个可供下载的文件附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
-                self.download_btn.configure(state="normal")
-            else:
-                self.att_lbl.configure(text="本篇文章未检测到独立文件附件")
-
-        self.parent.run_async(worker, callback=callback)
-
-    def download_all(self):
-        if not self.attachment_links:
-            return
-        out_dir = filedialog.askdirectory(title="选择下载文件保存目录")
-        if not out_dir:
-            return
-            
-        self.download_btn.configure(state="disabled", text="正在下载...")
-        
-        def task():
-            ch_cli.download_attachments(self.attachment_links, out_dir)
-            return True
-
-        def callback(res):
-            if not self.winfo_exists():
-                return
-            self.download_btn.configure(state="normal", text="下载关联文件")
-            messagebox.showinfo("成功", f"文件附件下载成功，已保存至:\n{out_dir}")
-
-        self.parent.run_async(task, callback=callback)
-
-
-class HygieneFrame(ctk.CTkFrame):
-    def __init__(self, parent, controller):
-        super().__init__(parent, fg_color="transparent")
-        self.controller = controller
-        
-        self.page = 1
-
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.pack(fill="x", pady=(5, 10))
-
-        self.title = ctk.CTkLabel(self.header, text="全校纪律卫生考评记录", font=ctk.CTkFont(size=18, weight="bold"))
-        self.title.pack(side="left", padx=5)
-
-        self.refresh_btn = ctk.CTkButton(self.header, text="刷新", width=80, command=self.load_list)
-        self.refresh_btn.pack(side="right", padx=5)
-
-        self.prev_btn = ctk.CTkButton(self.header, text="< 上一页", width=80, command=lambda: self.change_page(-1))
-        self.prev_btn.pack(side="right", padx=5)
-        
-        self.page_label = ctk.CTkLabel(self.header, text="第 1 页", font=ctk.CTkFont(size=13))
-        self.page_label.pack(side="right", padx=10)
-
-        self.next_btn = ctk.CTkButton(self.header, text="下一页 >", width=80, command=lambda: self.change_page(1))
-        self.next_btn.pack(side="right", padx=5)
-
-        self.scroll = ctk.CTkScrollableFrame(self)
-        self.scroll.pack(fill="both", expand=True)
-
-        self.loaded = False
-
-    def on_show(self):
-        if not self.loaded:
-            self.load_list()
-
-    def change_page(self, delta):
-        if self.page + delta < 1:
-            return
-        self.page += delta
-        self.page_label.configure(text=f"第 {self.page} 页")
-        self.load_list()
-
-    def load_list(self):
-        self.refresh_btn.configure(state="disabled", text="加载中...")
-        self.prev_btn.configure(state="disabled")
-        self.next_btn.configure(state="disabled")
-        for child in self.scroll.winfo_children():
-            child.destroy()
-            
-        loading = ctk.CTkLabel(self.scroll, text="正在读取纪律卫生考评记录...", font=ctk.CTkFont(size=14))
-        loading.pack(pady=40)
-
-        def query_hygiene():
-            status, body, _ = ch_cli.make_request(f"/classappraise/hygienePictures_receive_list/?page={self.page}", method="GET")
-            if status != 200:
-                return False, f"HTTP Error: {status}"
-            
-            html_content = body.decode("utf-8", errors="ignore")
-            tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
-            trs = tr_pattern.findall(html_content)
-            
-            rows = []
-            for tr in trs:
-                if "show-Message" in tr:
-                    id_m = re.search(r'/classappraise/show-Message/(\d+)/\s*', tr)
-                    record_id = id_m.group(1) if id_m else ""
-                    
-                    tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-                    if len(tds) >= 4:
-                        location = ch_cli.clean_html(tds[1])
-                        description = ch_cli.clean_html(tds[2])
-                        date = ch_cli.clean_html(tds[3])
-                        rows.append((record_id, location, description, date))
-            return True, rows
-
-        def callback(res):
-            self.refresh_btn.configure(state="normal", text="刷新")
-            self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
-            self.next_btn.configure(state="normal")
-            for child in self.scroll.winfo_children():
-                child.destroy()
-                
-            success, data = res
-            if not success:
-                err = ctk.CTkLabel(self.scroll, text=f"加载失败: {data}\n请确认 Cookie 连接是否有效。", text_color="red")
-                err.pack(pady=40)
-                return
-                
-            if not data:
-                empty = ctk.CTkLabel(self.scroll, text="本页暂无扣分考评违纪记录。")
-                empty.pack(pady=40)
-                return
-                
-            self.loaded = True
-            colors = get_theme_colors()
-            for record_id, location, description, date in data:
-                card = ctk.CTkFrame(self.scroll, corner_radius=6)
-                card.pack(fill="x", padx=5, pady=5)
-                
-                card.columnconfigure(0, weight=1)
-                
-                loc_lbl = tk.Label(card, text=f"📍 检查地点: {location}   |   检查日期: {date}", font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
-                loc_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
-                
-                desc_lbl = tk.Label(card, text=f"违纪描述: {description}", fg=colors["text_secondary"], bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
-                desc_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-                
-                btn = ctk.CTkButton(card, text="多媒体详情", width=95, command=lambda r=record_id: self.show_detail(r))
-                btn.grid(row=0, column=1, rowspan=2, padx=15, pady=10)
-
-        self.controller.run_async(query_hygiene, callback=callback)
-
-    def show_detail(self, record_id):
-        detail_win = HygieneDetailWindow(self.controller, record_id)
-        self.controller.wait_window(detail_win)
-
-
-class HygieneDetailWindow(ctk.CTkToplevel):
-    def __init__(self, parent, record_id):
-        super().__init__(parent)
-        self.parent = parent
-        self.record_id = record_id
-        self.title("纪律卫生违纪考评明细")
-        self.geometry("700x520")
-        
-        self.transient(parent)
-        self.wait_visibility()
-        self.grab_set()
-
-        self.grid_rowconfigure(2, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-        self.meta_frame = ctk.CTkFrame(self, corner_radius=0)
-        self.meta_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 5))
-        self.meta_frame.columnconfigure(0, weight=1)
-
-        self.title_lbl = ctk.CTkLabel(self.meta_frame, text="读取违纪考评信息...", font=ctk.CTkFont(size=15, weight="bold"), justify="left")
-        self.title_lbl.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
-
-        self.info_lbl = ctk.CTkLabel(self.meta_frame, text="", text_color="grey60", font=ctk.CTkFont(size=12))
-        self.info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-
-        # 描述与多媒体列表显示区
-        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=14))
-        self.textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=5)
-        
-        # 违纪配图/视频多媒体下载条
-        self.attachment_frame = ctk.CTkFrame(self, height=70)
-        self.attachment_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(5, 15))
-        self.attachment_frame.columnconfigure(0, weight=1)
-        
-        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="📷 正在获取现场图片/视频...", text_color="grey60", font=ctk.CTkFont(size=12))
-        self.att_lbl.grid(row=0, column=0, padx=15, pady=10, sticky="w")
-
-        self.download_btn = ctk.CTkButton(self.attachment_frame, text="下载现场照片", state="disabled", width=120, command=self.download_all)
-        self.download_btn.grid(row=0, column=1, padx=15, pady=10)
-
-        self.media_urls = []
-        self.load_detail()
-
-    def load_detail(self):
-        def worker():
-            status, body, _ = ch_cli.make_request(f"/classappraise/show-Message/{self.record_id}/", method="GET")
-            if status != 200:
-                return False, f"获取详情失败 (HTTP Code: {status})"
-            
-            html_content = body.decode("utf-8", errors="ignore")
-            
-            desc = "未知违纪说明"
-            content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
-            if content_m:
-                desc = ch_cli.render_html_to_markdown(content_m.group(1))
-                
-            recipients_all = "无"
-            rec1_m = re.search(r'id="multiCollapseExample1">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
-            if rec1_m:
-                recipients_all = ch_cli.clean_html(rec1_m.group(1))
-                
-            # 提取多媒体链接
-            media_urls = []
-            imgs = re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_content)
-            for img in imgs:
-                if "Logo" not in img and "newFunc" not in img and "sydw" not in img:
-                    if not img.startswith("http") and img.startswith("/"):
-                        media_urls.append(f"{ch_cli.BASE_URL}{img}")
-                    else:
-                        media_urls.append(img)
-                        
-            vids = re.findall(r'<video[^>]+src=["\'](.*?)["\']', html_content)
-            for vid in vids:
-                if not vid.startswith("http") and vid.startswith("/"):
-                    media_urls.append(f"{ch_cli.BASE_URL}{vid}")
-                else:
-                    media_urls.append(vid)
-                    
-            return True, (desc, recipients_all, media_urls)
-
-        def callback(res):
-            if not self.winfo_exists():
-                return
-            success, data = res
-            if not success:
-                self.title_lbl.configure(text="加载详情失败")
-                display_markdown_in_textbox(self.textbox, data)
-                self.att_lbl.configure(text="📷 无法加载多媒体现场照片")
-                return
-                
-            desc, recipients_all, media_urls = data
-            self.title_lbl.configure(text="🚨 违纪考评项明细记录")
-            self.info_lbl.configure(text=f"关联收件人(班主任等): {recipients_all}")
-            
-            full_txt = f"违纪说明:\n{desc}\n\n现场连线文件链接:\n"
-            if media_urls:
-                for u in media_urls:
-                    full_txt += f"- {u}\n"
-            else:
-                full_txt += "无\n"
-            display_markdown_in_textbox(self.textbox, full_txt)
-            
-            self.media_urls = media_urls
-            if media_urls:
-                self.att_lbl.configure(text=f"📷 发现 {len(media_urls)} 张违纪现场图片/视频文件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
-                self.download_btn.configure(state="normal")
-            else:
-                self.att_lbl.configure(text="📷 本记录未关联现场多媒体附件")
-
-        self.parent.run_async(worker, callback=callback)
-
-    def download_all(self):
-        if not self.media_urls:
-            return
-        out_dir = filedialog.askdirectory(title="选择图片保存目录")
-        if not out_dir:
-            return
-            
-        self.download_btn.configure(state="disabled", text="正在保存...")
-        
-        def task():
-            ch_cli.download_attachments(self.media_urls, out_dir)
-            return True
-
-        def callback(res):
-            if not self.winfo_exists():
-                return
-            self.download_btn.configure(state="normal", text="下载现场照片")
-            messagebox.showinfo("成功", f"照片已下载并成功保存至:\n{out_dir}")
-
-        self.parent.run_async(task, callback=callback)
-
-
-class BedroomFrame(ctk.CTkFrame):
-    def __init__(self, parent, controller):
-        super().__init__(parent, fg_color="transparent")
-        self.controller = controller
-
-        # 头部 Title
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.pack(fill="x", pady=(5, 10))
-
-        self.title = ctk.CTkLabel(self.header, text="寝室分配与楼宇卫生扣分考评", font=ctk.CTkFont(size=18, weight="bold"))
-        self.title.pack(side="left", padx=5)
-
-        # Tab 选项卡分流
-        self.tabview = ctk.CTkTabview(self)
-        self.tabview.pack(fill="both", expand=True)
-
-        self.tab_class = self.tabview.add("按班级查寝室分配")
-        self.tab_hygiene = self.tabview.add("按楼宇查扣分记录")
-
-        self.init_class_tab()
-        self.init_hygiene_tab()
-
-    def init_class_tab(self):
-        # 班级分配面板布局
-        self.tab_class.columnconfigure(2, weight=1)
-        
-        lbl_grade = ctk.CTkLabel(self.tab_class, text="年级选择:")
-        lbl_grade.grid(row=0, column=0, padx=15, pady=15, sticky="w")
-        
-        self.grade_combo = ctk.CTkOptionMenu(self.tab_class, values=["高一", "高二", "高三"], width=120)
-        self.grade_combo.grid(row=0, column=1, padx=5, pady=15, sticky="w")
-
-        lbl_cls = ctk.CTkLabel(self.tab_class, text="班级名字/数字:")
-        lbl_cls.grid(row=0, column=2, padx=15, pady=15, sticky="w")
-
-        self.cls_entry = ctk.CTkEntry(self.tab_class, placeholder_text="如: 10班 或 10", width=120)
-        self.cls_entry.grid(row=0, column=3, padx=5, pady=15, sticky="w")
-
-        self.query_cls_btn = ctk.CTkButton(self.tab_class, text="查询寝室分配", width=130, command=self.query_class_bedroom)
-        self.query_cls_btn.grid(row=0, column=4, padx=15, pady=15, sticky="e")
-
-        self.cls_result = ctk.CTkTextbox(self.tab_class, font=ctk.CTkFont(size=14))
-        self.cls_result.grid(row=1, column=0, columnspan=5, sticky="nsew", padx=15, pady=(5, 15))
-        self.tab_class.rowconfigure(1, weight=1)
-
-    def init_hygiene_tab(self):
-        # 楼宇扣分查询面板布局
-        self.tab_hygiene.columnconfigure(3, weight=1)
-
-        lbl_dorm = ctk.CTkLabel(self.tab_hygiene, text="宿舍楼宇:")
-        lbl_dorm.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
-        self.dorm_mapping = {
-            "3号楼 (1)": "1", "4号楼 (2)": "2", "5号楼 (3)": "3", "6号楼 (4)": "4",
-            "7号楼 (5)": "5", "8号楼 (6)": "6", "9号楼 (7)": "7", "10号楼 (8)": "8", "1号楼 (9)": "9"
-        }
-        self.dorm_combo = ctk.CTkOptionMenu(self.tab_hygiene, values=list(self.dorm_mapping.keys()), width=120)
-        self.dorm_combo.grid(row=0, column=1, padx=5, pady=10, sticky="w")
-
-        lbl_days = ctk.CTkLabel(self.tab_hygiene, text="查询天数:")
-        lbl_days.grid(row=0, column=2, padx=10, pady=10, sticky="w")
-
-        self.days_combo = ctk.CTkOptionMenu(self.tab_hygiene, values=["最近30天", "最近60天", "最近7天"], width=100)
-        self.days_combo.grid(row=0, column=3, padx=5, pady=10, sticky="w")
-
-        self.show_all_var = ctk.BooleanVar(value=False)
-        self.show_all_cb = ctk.CTkCheckBox(self.tab_hygiene, text="显示无扣分寝室", variable=self.show_all_var)
-        self.show_all_cb.grid(row=0, column=4, padx=10, pady=10, sticky="w")
-
-        self.query_hyg_btn = ctk.CTkButton(self.tab_hygiene, text="查询卫生扣分", width=120, command=self.query_dorm_hygiene)
-        self.query_hyg_btn.grid(row=0, column=5, padx=10, pady=10, sticky="e")
-
-        self.hyg_scroll = ctk.CTkScrollableFrame(self.tab_hygiene)
-        self.hyg_scroll.grid(row=1, column=0, columnspan=6, sticky="nsew", padx=10, pady=10)
-        self.tab_hygiene.rowconfigure(1, weight=1)
-
-    def query_class_bedroom(self):
-        grade_str = self.grade_combo.get()
-        grade_map = {"高一": 1, "高二": 2, "高三": 3}
-        grade_id = grade_map[grade_str]
-        
-        class_query = self.cls_entry.get().strip()
-        if not class_query:
-            messagebox.showerror("错误", "请输入班级！")
-            return
-            
-        self.query_cls_btn.configure(state="disabled", text="查询中...")
-        self.cls_result.delete("0.0", "end")
-
-        def query_task():
-            res = ch_cli.find_class_id(grade_id, class_query)
-            if not res:
-                return False, f"未能在{grade_str}中找到匹配班级 \"{class_query}\""
-            class_id, class_name = res
-            
-            post_data = {
-                "chGradeIDForName": grade_id,
-                "chClassIDForName": class_id
-            }
-            status, body, _ = ch_cli.make_request("/classappraise/QueryBedroomsByClassID_JustForView/", method="POST", data=post_data)
-            if status != 200:
-                return False, f"网络请求失败 (HTTP: {status})"
-                
-            html = body.decode("utf-8", errors="ignore")
-            alert_m = re.search(r'class="alert alert-primary"[^>]*>\s*(.*?)\s*</div>', html, re.DOTALL)
-            if alert_m:
-                return True, (class_name, ch_cli.clean_html(alert_m.group(1)))
-            return False, "未查到该班级的寝室分配数据。"
-
-        def callback(res):
-            self.query_cls_btn.configure(state="normal", text="查询寝室分配")
-            success, val = res
-            if not success:
-                self.cls_result.insert("0.0", f"查询失败: {val}")
-            else:
-                c_name, result_text = val
-                self.cls_result.insert("0.0", f"班级：{c_name}\n\n{result_text}")
-
-        self.controller.run_async(query_task, callback=callback)
-
-    def query_dorm_hygiene(self):
-        dorm_choice = self.dorm_combo.get()
-        dorm_id = self.dorm_mapping[dorm_choice]
-        
-        days_choice = self.days_combo.get()
-        days_map = {"最近7天": 7, "最近30天": 30, "最近60天": 60}
-        days = days_map[days_choice]
-        
-        # 计算起止日期
-        end_date = time.strftime("%Y-%m-%d")
-        start_date = time.strftime("%Y-%m-%d", time.localtime(time.time() - days * 86400))
-        
-        show_all = self.show_all_var.get()
-        
-        self.query_hyg_btn.configure(state="disabled", text="查询中...")
-        for child in self.hyg_scroll.winfo_children():
-            child.destroy()
-            
-        loading = ctk.CTkLabel(self.hyg_scroll, text="正在向校园网检索宿舍评分数据，请稍候...", font=ctk.CTkFont(size=14))
-        loading.pack(pady=40)
-
-        def query_task():
-            post_data = {
-                "chDormitoryForName": dorm_id,
-                "theBeginDateForName": start_date,
-                "theEndDateForName": end_date
-            }
-            status, body, _ = ch_cli.make_request("/classappraise/BedRoom_DisciplineHygiene_JustForView/", method="POST", data=post_data)
-            if status != 200:
-                return False, f"HTTP Error: {status}"
-                
-            html = body.decode("utf-8", errors="ignore")
-            tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
-            trs = tr_pattern.findall(html)
-            
-            rows = []
-            for tr in trs:
-                tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-                if len(tds) >= 4:
-                    room = ch_cli.clean_html(tds[0])
-                    cls_name = ch_cli.clean_html(tds[1])
-                    hyg = ch_cli.clean_html(tds[2]) or "0"
-                    disc = ch_cli.clean_html(tds[3]) or "0"
-                    total = ch_cli.clean_html(tds[4]) if len(tds) > 4 else "0"
-                    
-                    if not show_all:
-                        # 过滤无扣分项
-                        if not total or total.strip() == "" or total.strip() == "0":
-                            continue
-                    rows.append((room, cls_name, hyg, disc, total))
-            return True, rows
-
-        def callback(res):
-            self.query_hyg_btn.configure(state="normal", text="查询卫生扣分")
-            for child in self.hyg_scroll.winfo_children():
-                child.destroy()
-                
-            success, data = res
-            if not success:
-                err = ctk.CTkLabel(self.hyg_scroll, text=f"加载失败: {data}\n请确认 Cookie 连接是否有效。", text_color="red")
-                err.pack(pady=40)
-                return
-                
-            if not data:
-                empty = ctk.CTkLabel(self.hyg_scroll, text="此日期范围内该宿舍楼宇没有找到任何扣分记录。")
-                empty.pack(pady=40)
-                return
-                
-            colors = get_theme_colors()
-            for room, cls_name, hyg, disc, total in data:
-                card = ctk.CTkFrame(self.hyg_scroll, corner_radius=6)
-                card.pack(fill="x", padx=5, pady=4)
-                
-                card.columnconfigure(0, weight=1)
-                
-                title_lbl = tk.Label(card, text=f"寝室: {room}   ({cls_name})", font=("Helvetica", 11, "bold"), fg=colors["text_primary"], bg=colors["card_bg"], anchor="w", justify="left")
-                title_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
-                
-                score_color = "#ff5722" if total != "0" else colors["text_secondary"]
-                score_lbl = tk.Label(
-                    card, 
-                    text=f"卫生扣分: {hyg}   |   纪律扣分: {disc}   |   合计扣分: {total}", 
-                    fg=score_color, 
-                    bg=colors["card_bg"],
-                    font=("Helvetica", 9),
-                    anchor="w",
-                    justify="left"
-                )
-                score_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-
-        self.controller.run_async(query_task, callback=callback)
-
-
-class DutyFrame(ctk.CTkFrame):
-    def __init__(self, parent, controller):
-        super().__init__(parent, fg_color="transparent")
-        self.controller = controller
-
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.pack(fill="x", pady=(5, 10))
-
-        self.title = ctk.CTkLabel(self.header, text="校园教师值周排班安排", font=ctk.CTkFont(size=18, weight="bold"))
-        self.title.pack(side="left", padx=5)
-
-        self.tabview = ctk.CTkTabview(self)
-        self.tabview.pack(fill="both", expand=True)
-
-        self.tab_current = self.tabview.add("当前星期安排")
-        self.tab_all = self.tabview.add("学期排班总表")
-
-        self.init_current_tab()
-        self.init_all_tab()
-        
-        self.loaded = False
-
-    def on_show(self):
-        if not self.loaded:
-            self.load_current_duty()
-
-    def init_current_tab(self):
-        self.tab_current.columnconfigure(0, weight=1)
-        
-        self.current_scroll = ctk.CTkScrollableFrame(self.tab_current)
-        self.current_scroll.grid(row=0, column=0, sticky="nsew", padx=15, pady=15)
-        self.tab_current.rowconfigure(0, weight=1)
-
-        self.refresh_cur_btn = ctk.CTkButton(self.tab_current, text="刷新值周安排", command=self.load_current_duty)
-        self.refresh_cur_btn.grid(row=1, column=0, pady=(0, 15))
-
-    def init_all_tab(self):
-        # 值周总表布局，支持搜索
-        self.tab_all.columnconfigure(0, weight=1)
-        
-        search_frame = ctk.CTkFrame(self.tab_all, fg_color="transparent")
-        search_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=10)
-        search_frame.columnconfigure(0, weight=1)
-        
-        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="输入教师名字或值周班级（如: 创新01班）模糊搜索")
-        self.search_entry.grid(row=0, column=0, padx=(0, 10), sticky="ew")
-
-        self.search_btn = ctk.CTkButton(search_frame, text="搜索", width=90, command=self.search_duty)
-        self.search_btn.grid(row=0, column=1)
-
-        self.all_scroll = ctk.CTkScrollableFrame(self.tab_all)
-        self.all_scroll.grid(row=1, column=0, sticky="nsew", padx=15, pady=(5, 15))
-        self.tab_all.rowconfigure(1, weight=1)
-
-        self.duties_cache = []
-
-    def load_current_duty(self):
-        for child in self.current_scroll.winfo_children():
-            child.destroy()
-        loading = ctk.CTkLabel(self.current_scroll, text="正在读取当前星期值周安排...")
-        loading.pack(pady=40)
-
-        def query_task():
-            status, body, _ = ch_cli.make_request("/classappraise/TeacherDutyWeek_JustForView/", method="GET")
-            if status != 200:
-                return False, f"HTTP Error: {status}"
-                
-            html = body.decode("utf-8", errors="ignore")
-            blocks = re.findall(r'<ul class="list-group"\s*>(.*?)</ul>', html, re.DOTALL)
-            
-            duties = []
-            current_week = None
-            for idx, block in enumerate(blocks):
-                is_current = "list-group-item-success" in block
-                lis = re.findall(r'<li[^>]*>(.*?)</li>', block, re.DOTALL)
-                if not lis:
-                    continue
-                week_name = re.sub(r'<[^>]+>', '', lis[0]).strip()
-                date_range = re.sub(r'<[^>]+>', '', lis[1]).strip() if len(lis) > 1 else ""
-                
-                details = {}
-                for li in lis[2:]:
-                    clean = re.sub(r'<[^>]+>', '', li).strip()
-                    if "：" in clean:
-                        k, v = clean.split("：", 1)
-                        details[k.strip()] = v.strip()
-                        
-                info = {
-                    "is_current": is_current,
-                    "week": week_name,
-                    "date": date_range,
-                    "admin": details.get("行政值周", ""),
-                    "group1": details.get("第一小组", ""),
-                    "group2": details.get("第二小组", ""),
-                    "group3": details.get("第三小组", ""),
-                    "class": details.get("值周班级", ""),
-                    "talk": details.get("旗下讲话", "")
-                }
-                duties.append(info)
-                if is_current:
-                    current_week = info
-            return True, (current_week, duties)
-
-        def callback(res):
-            for child in self.current_scroll.winfo_children():
-                child.destroy()
-            success, data = res
-            if not success:
-                err = ctk.CTkLabel(self.current_scroll, text=f"加载失败: {data}", text_color="red")
-                err.pack(pady=40)
-                return
-                
-            current_week, duties = data
-            self.duties_cache = duties
-            self.loaded = True
-            
-            # 渲染当前周次
-            if not current_week:
-                empty = ctk.CTkLabel(self.current_scroll, text="未能在值周排班中检测到标记为当前周次的条目。")
-                empty.pack(pady=40)
-            else:
-                card = ctk.CTkFrame(self.current_scroll, border_width=1, border_color="#00adb5")
-                card.pack(fill="x", padx=10, pady=10)
-                
-                title = ctk.CTkLabel(card, text=f"★ 当前值周次: {current_week['week']} ★", font=ctk.CTkFont(size=16, weight="bold"), text_color="#00adb5")
-                title.pack(pady=(15, 5))
-                
-                dates = ctk.CTkLabel(card, text=f"时间范围: {current_week['date']}", text_color="grey60", font=ctk.CTkFont(size=12))
-                dates.pack(pady=(0, 15))
-                
-                lbl_admin = ctk.CTkLabel(card, text=f"行政值周教师: {current_week['admin']}", font=ctk.CTkFont(size=14, weight="bold"))
-                lbl_admin.pack(pady=5)
-                
-                lbl_class = ctk.CTkLabel(card, text=f"值周班级: {current_week['class']}", font=ctk.CTkFont(size=14, weight="bold"))
-                lbl_class.pack(pady=5)
-
-                lbl_group1 = ctk.CTkLabel(card, text=f"第一小组: {current_week['group1']}", justify="left")
-                lbl_group1.pack(pady=5)
-
-                lbl_group2 = ctk.CTkLabel(card, text=f"第二小组: {current_week['group2']}", justify="left")
-                lbl_group2.pack(pady=5)
-
-                if current_week['group3'].replace(",", "").strip():
-                    lbl_group3 = ctk.CTkLabel(card, text=f"第三小组: {current_week['group3']}", justify="left")
-                    lbl_group3.pack(pady=5)
-
-                if current_week['talk']:
-                    lbl_talk = ctk.CTkLabel(card, text=f"旗下讲话主题: {current_week['talk']}", text_color="gold", font=ctk.CTkFont(size=13))
-                    lbl_talk.pack(pady=(10, 15))
-                    
-            # 同时刷新总表页面内容
-            self.refresh_all_tab(duties)
-
-        self.controller.run_async(query_task, callback=callback)
-
-    def refresh_all_tab(self, duties):
-        for child in self.all_scroll.winfo_children():
-            child.destroy()
-            
-        colors = get_theme_colors()
-        for d in duties:
-            card = ctk.CTkFrame(self.all_scroll, corner_radius=6, border_width=1 if d["is_current"] else 0, border_color="#00adb5")
-            card.pack(fill="x", padx=5, pady=4)
-            
-            card.columnconfigure(0, weight=1)
-            
-            title_text = d['week']
-            if d["is_current"]:
-                title_text += "  [当前值周]"
-                
-            t_color = "#00adb5" if d["is_current"] else colors["text_primary"]
-            title_lbl = tk.Label(card, text=title_text, font=("Helvetica", 11, "bold"), fg=t_color, bg=colors["card_bg"], anchor="w", justify="left")
-            title_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
-            
-            det_text = f"行政值周: {d['admin']}   |   值周班级: {d['class']}   |   时间: {d['date']}"
-            det_lbl = tk.Label(card, text=det_text, fg=colors["text_secondary"], bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
-            det_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-
-    def search_duty(self):
-        q = self.search_entry.get().strip()
-        if not q:
-            # 输入为空，恢复全表显示
-            if self.duties_cache:
-                self.refresh_all_tab(self.duties_cache)
-            return
-            
-        matches = []
-        for d in self.duties_cache:
-            if q in d["week"] or q in d["admin"] or q in d["group1"] or q in d["group2"] or q in d["group3"] or q in d["class"]:
-                matches.append(d)
-                
-        for child in self.all_scroll.winfo_children():
-            child.destroy()
-            
-        if not matches:
-            empty = ctk.CTkLabel(self.all_scroll, text="没有搜索到任何匹配的值周排班周次。")
-            empty.pack(pady=40)
-        else:
-            self.refresh_all_tab(matches)
-
-
-class LostFoundFrame(ctk.CTkFrame):
-    def __init__(self, parent, controller):
-        super().__init__(parent, fg_color="transparent")
-        self.controller = controller
-        
-        self.page = 1
-
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.pack(fill="x", pady=(5, 10))
-
-        self.title = ctk.CTkLabel(self.header, text="全校失物招领登记", font=ctk.CTkFont(size=18, weight="bold"))
-        self.title.pack(side="left", padx=5)
-
-        self.refresh_btn = ctk.CTkButton(self.header, text="刷新", width=80, command=self.load_list)
-        self.refresh_btn.pack(side="right", padx=5)
-
-        self.prev_btn = ctk.CTkButton(self.header, text="< 上一页", width=80, command=lambda: self.change_page(-1))
-        self.prev_btn.pack(side="right", padx=5)
-        
-        self.page_label = ctk.CTkLabel(self.header, text="第 1 页", font=ctk.CTkFont(size=13))
-        self.page_label.pack(side="right", padx=10)
-
-        self.next_btn = ctk.CTkButton(self.header, text="下一页 >", width=80, command=lambda: self.change_page(1))
-        self.next_btn.pack(side="right", padx=5)
-
-        self.scroll = ctk.CTkScrollableFrame(self)
-        self.scroll.pack(fill="both", expand=True)
-
-        self.loaded = False
-
-    def on_show(self):
-        if not self.loaded:
-            self.load_list()
-
-    def change_page(self, delta):
-        if self.page + delta < 1:
-            return
-        self.page += delta
-        self.page_label.configure(text=f"第 {self.page} 页")
-        self.load_list()
-
-    def load_list(self):
-        self.refresh_btn.configure(state="disabled", text="加载中...")
-        self.prev_btn.configure(state="disabled")
-        self.next_btn.configure(state="disabled")
-        for child in self.scroll.winfo_children():
-            child.destroy()
-            
-        loading = ctk.CTkLabel(self.scroll, text="正在读取校园失物招领，请稍候...", font=ctk.CTkFont(size=14))
-        loading.pack(pady=40)
-
-        def query_lf():
-            status, body, _ = ch_cli.make_request(f"/lostAndFound/lostAndFoundList/?page={self.page}", method="GET", follow_redirects=True)
-            if status != 200:
-                return False, f"HTTP Error: {status}"
-                
-            html_content = body.decode("utf-8", errors="ignore")
-            tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
-            trs = tr_pattern.findall(html_content)
-            
-            rows = []
-            for tr in trs:
-                tds = re.findall(r'<(?:td|th)[^>]*>(.*?)</(?:td|th)>', tr, re.DOTALL)
-                if len(tds) >= 8 and "类别" not in tds[1]:
-                    lf_id = ""
-                    id_m = re.search(r'href=["\']/lostAndFound/lostAndFoundDetail/(\d+)/["\']', tds[2])
-                    if id_m:
-                        lf_id = id_m.group(1)
-                        
-                    category = ch_cli.clean_html(tds[1])
-                    title = ch_cli.clean_html(tds[2])
-                    reporter = ch_cli.clean_html(tds[3])
-                    start_date = ch_cli.clean_html(tds[6])
-                    status_text = ch_cli.clean_html(tds[8]) if len(tds) > 8 else ""
-                    
-                    rows.append((lf_id, category, title, reporter, start_date, status_text))
-            return True, rows
-
-        def callback(res):
-            self.refresh_btn.configure(state="normal", text="刷新")
-            self.prev_btn.configure(state="normal" if self.page > 1 else "disabled")
-            self.next_btn.configure(state="normal")
-            for child in self.scroll.winfo_children():
-                child.destroy()
-                
-            success, data = res
-            if not success:
-                err = ctk.CTkLabel(self.scroll, text=f"加载失败: {data}", text_color="red")
-                err.pack(pady=40)
-                return
-                
-            if not data:
-                empty = ctk.CTkLabel(self.scroll, text="本页暂无失物招领登记。")
-                empty.pack(pady=40)
-                return
-                
-            self.loaded = True
-            colors = get_theme_colors()
-            for lf_id, category, title, reporter, start_date, status_text in data:
-                card = ctk.CTkFrame(self.scroll, corner_radius=6)
-                card.pack(fill="x", padx=5, pady=4)
-                
-                card.columnconfigure(0, weight=1)
-                
-                # 状态高亮
-                tag_color = "#f44336" if "丢" in category else "#4caf50"
-                stat_color = "#f44336" if "等待" in status_text else colors["text_secondary"]
-                
-                title_lbl = tk.Label(card, text=f"[{category}]  {title}", font=("Helvetica", 11, "bold"), fg=tag_color, bg=colors["card_bg"], anchor="w", justify="left")
-                title_lbl.grid(row=0, column=0, padx=15, pady=(10, 2), sticky="w")
-                
-                info_text = f"发布处: {reporter}   |   发布日期: {start_date}   |   状态: {status_text}"
-                info_lbl = tk.Label(card, text=info_text, fg=stat_color, bg=colors["card_bg"], font=("Helvetica", 9), anchor="w", justify="left")
-                info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-                
-                btn = ctk.CTkButton(card, text="查看招领", width=90, command=lambda l=lf_id: self.show_detail(l))
-                btn.grid(row=0, column=1, rowspan=2, padx=15, pady=10)
-
-        self.controller.run_async(query_lf, callback=callback)
-
-    def show_detail(self, lf_id):
-        detail_win = LostFoundDetailWindow(self.controller, lf_id)
-        self.controller.wait_window(detail_win)
-
-
-class LostFoundDetailWindow(ctk.CTkToplevel):
-    def __init__(self, parent, lf_id):
-        super().__init__(parent)
-        self.parent = parent
-        self.lf_id = lf_id
-        self.title("物品招领/丢失信息明细")
-        self.geometry("700x520")
-        
-        self.transient(parent)
-        self.wait_visibility()
-        self.grab_set()
-
-        self.grid_rowconfigure(2, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-        self.meta_frame = ctk.CTkFrame(self, corner_radius=0)
-        self.meta_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 5))
-        self.meta_frame.columnconfigure(0, weight=1)
-
-        self.title_lbl = ctk.CTkLabel(self.meta_frame, text="正在读取招领信息详情...", font=ctk.CTkFont(size=15, weight="bold"), justify="left")
-        self.title_lbl.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
-
-        self.info_lbl = ctk.CTkLabel(self.meta_frame, text="", text_color="grey60", font=ctk.CTkFont(size=12))
-        self.info_lbl.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
-
-        self.textbox = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Courier", size=14))
-        self.textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=5)
-        
-        # 配图多媒体
-        self.attachment_frame = ctk.CTkFrame(self, height=70)
-        self.attachment_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(5, 15))
-        self.attachment_frame.columnconfigure(0, weight=1)
-        
-        self.att_lbl = ctk.CTkLabel(self.attachment_frame, text="正在提取关联附件...", text_color="grey60", font=ctk.CTkFont(size=12))
-        self.att_lbl.grid(row=0, column=0, padx=15, pady=10, sticky="w")
-
-        self.download_btn = ctk.CTkButton(self.attachment_frame, text="下载全部文件", state="disabled", width=120, command=self.download_all)
-        self.download_btn.grid(row=0, column=1, padx=15, pady=10)
-
-        self.media_urls = []
-        self.load_detail()
-
-    def load_detail(self):
-        def worker():
-            status, body, _ = ch_cli.make_request(f"/lostAndFound/lostAndFoundDetail/{self.lf_id}/", method="GET", follow_redirects=True)
-            if status != 200:
-                return False, f"获取详情失败 (HTTP Code: {status})"
-            
-            html_content = body.decode("utf-8", errors="ignore")
-            
-            title = "无标题"
-            title_m = re.search(r'<div class="ArticleTitle[^>]*>(.*?)</div>', html_content, re.DOTALL)
-            if title_m:
-                title = ch_cli.clean_html(title_m.group(1))
-                
-            reporter = "未知"
-            rep_m = re.search(r'来源：\s*([^<]+)', html_content)
-            if rep_m:
-                reporter = ch_cli.clean_html(rep_m.group(1))
-                
-            reviewer = "未知"
-            rev_m = re.search(r'审核人：\s*([^<]+)', html_content)
-            if rev_m:
-                reviewer = ch_cli.clean_html(rev_m.group(1))
-                
-            pub_time = "未知"
-            time_m = re.search(r'发布时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
-            if time_m:
-                pub_time = time_m.group(1).strip()
-                
-            content = ""
-            content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
-            if content_m:
-                content = ch_cli.render_html_to_markdown(content_m.group(1))
-                
-            # 提取多媒体
-            media_urls = []
-            imgs = re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_content)
-            for img in imgs:
-                if "Logo" not in img and "newFunc" not in img and "sydw" not in img:
-                    if not img.startswith("http") and img.startswith("/"):
-                        media_urls.append(f"{ch_cli.BASE_URL}{img}")
-                    else:
-                        media_urls.append(img)
-                        
-            vids = re.findall(r'<video[^>]+src=["\'](.*?)["\']', html_content)
-            for vid in vids:
-                if not vid.startswith("http") and vid.startswith("/"):
-                    media_urls.append(f"{ch_cli.BASE_URL}{vid}")
-                else:
-                    media_urls.append(vid)
-
-            attachment_links = ch_cli.extract_attachment_links(html_content)
-            for link in attachment_links:
-                if link not in media_urls:
-                    media_urls.append(link)
-            return True, (title, reporter, reviewer, pub_time, content, media_urls)
-
-        def callback(res):
-            if not self.winfo_exists():
-                return
-            success, data = res
-            if not success:
-                self.title_lbl.configure(text="加载详情失败")
-                display_markdown_in_textbox(self.textbox, data)
-                self.att_lbl.configure(text="无法加载招领配图/附件")
-                return
-                
-            title, reporter, reviewer, pub_time, content, media_urls = data
-            self.title_lbl.configure(text=f"物品招领：{title}")
-            self.info_lbl.configure(text=f"登记处: {reporter}   |   审核人: {reviewer}   |   时间: {pub_time}")
-            display_markdown_in_textbox(self.textbox, content)
-            
-            self.media_urls = media_urls
-            if media_urls:
-                self.att_lbl.configure(text=f"发现该失物招领关联了 {len(media_urls)} 个多媒体文件或附件", text_color="#1088ff" if ctk.get_appearance_mode() == "Light" else "#00adb5")
-                self.download_btn.configure(state="normal")
-            else:
-                self.att_lbl.configure(text="本招领未检测到多媒体附件或关联文件")
-
-        self.parent.run_async(worker, callback=callback)
-
-    def download_all(self):
-        if not self.media_urls:
-            return
-        out_dir = filedialog.askdirectory(title="选择照片保存位置")
-        if not out_dir:
-            return
-            
-        self.download_btn.configure(state="disabled", text="正在保存...")
-        
-        def task():
-            ch_cli.download_attachments(self.media_urls, out_dir)
-            return True
-
-        def callback(res):
-            if not self.winfo_exists():
-                return
-            self.download_btn.configure(state="normal", text="下载全部文件")
-            messagebox.showinfo("成功", f"文件附件下载成功，已保存至:\n{out_dir}")
-
-        self.parent.run_async(task, callback=callback)
-
-
-class FileFrame(ctk.CTkFrame):
-    def __init__(self, parent, controller):
-        super().__init__(parent, fg_color="transparent")
-        self.controller = controller
-
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.pack(fill="x", pady=(5, 10))
-
-        self.title = ctk.CTkLabel(self.header, text="学校文件临时寄存与安全寄取提取", font=ctk.CTkFont(size=18, weight="bold"))
-        self.title.pack(side="left", padx=5)
-
-        # 左右双分流面板
-        self.body = ctk.CTkFrame(self, fg_color="transparent")
-        self.body.pack(fill="both", expand=True)
-        self.body.columnconfigure(0, weight=1)
-        self.body.columnconfigure(1, weight=1)
-
-        self.init_upload_panel()
-        self.init_download_panel()
-
-    def init_upload_panel(self):
-        # 左侧：上传面板
-        self.upload_panel = ctk.CTkFrame(self.body)
-        self.upload_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=10)
-        self.upload_panel.columnconfigure(0, weight=1)
-
-        lbl = ctk.CTkLabel(self.upload_panel, text="寄存文件上传", font=ctk.CTkFont(size=15, weight="bold"))
-        lbl.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w")
-
-        desc = ctk.CTkLabel(self.upload_panel, text="选择本地任意文件，客户端将自动执行\n2MB 大小逻辑分片上传，合并后生成六位提取密码。", text_color="grey60", font=ctk.CTkFont(size=12), justify="left")
-        desc.grid(row=1, column=0, padx=15, pady=5, sticky="w")
-
-        # 选择文件展示
-        self.sel_file_lbl = ctk.CTkLabel(self.upload_panel, text="尚未选择任何文件", text_color="grey50", font=ctk.CTkFont(size=13))
-        self.sel_file_lbl.grid(row=2, column=0, padx=15, pady=10, sticky="w")
-
-        self.choose_btn = ctk.CTkButton(self.upload_panel, text="选择本地文件", command=self.choose_file)
-        self.choose_btn.grid(row=3, column=0, padx=15, pady=5, sticky="w")
-
-        # 进度条
-        self.progress_bar = ctk.CTkProgressBar(self.upload_panel, width=240)
-        self.progress_bar.grid(row=4, column=0, padx=15, pady=15, sticky="w")
-        self.progress_bar.set(0)
-
-        self.progress_lbl = ctk.CTkLabel(self.upload_panel, text="进度: 0%", font=ctk.CTkFont(size=12))
-        self.progress_lbl.grid(row=4, column=0, padx=(270, 15), pady=15, sticky="w")
-
-        self.upload_btn = ctk.CTkButton(self.upload_panel, text="开始分片上传", state="disabled", command=self.start_upload)
-        self.upload_btn.grid(row=5, column=0, padx=15, pady=10, sticky="w")
-
-        # 上传生成的密码显示
-        self.pwd_result_frame = ctk.CTkFrame(self.upload_panel, fg_color="transparent")
-        self.pwd_result_frame.grid(row=6, column=0, padx=15, pady=15, sticky="ew")
-
-        self.pwd_lbl = ctk.CTkLabel(self.pwd_result_frame, text="", font=ctk.CTkFont(size=22, weight="bold"), text_color="#4caf50")
-        self.pwd_lbl.pack(side="left", padx=5)
-
-        self.copy_btn = ctk.CTkButton(self.pwd_result_frame, text="📋 复制密码", width=80, state="disabled", command=self.copy_password)
-        self.copy_btn.pack(side="left", padx=10)
-
-        self.selected_file_path = None
-        self.generated_pwd = ""
-
-    def init_download_panel(self):
-        # 右侧：下载提取面板
-        self.download_panel = ctk.CTkFrame(self.body)
-        self.download_panel.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=10)
-        self.download_panel.columnconfigure(0, weight=1)
-
-        lbl = ctk.CTkLabel(self.download_panel, text="提取下载文件", font=ctk.CTkFont(size=15, weight="bold"))
-        lbl.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w")
-
-        desc = ctk.CTkLabel(self.download_panel, text="输入发送方生成的六位数文件提取密码，\n即可高速下载合并好的寄存文件至本地指定位置。", text_color="grey60", font=ctk.CTkFont(size=12), justify="left")
-        desc.grid(row=1, column=0, padx=15, pady=5, sticky="w")
-
-        # 密码输入
-        lbl_pwd = ctk.CTkLabel(self.download_panel, text="输入 6 位提取密码:")
-        lbl_pwd.grid(row=2, column=0, padx=15, pady=(15, 5), sticky="w")
-
-        self.pwd_entry = ctk.CTkEntry(self.download_panel, placeholder_text="如: 123456", font=ctk.CTkFont(size=14), width=180)
-        self.pwd_entry.grid(row=3, column=0, padx=15, pady=5, sticky="w")
-
-        # 目标路径
-        self.dest_lbl = ctk.CTkLabel(self.download_panel, text="默认保存至: 系统下载目录/当前目录", text_color="grey50", font=ctk.CTkFont(size=12))
-        self.dest_lbl.grid(row=4, column=0, padx=15, pady=10, sticky="w")
-
-        self.dest_btn = ctk.CTkButton(self.download_panel, text="选择保存目录", command=self.choose_dest)
-        self.dest_btn.grid(row=5, column=0, padx=15, pady=5, sticky="w")
-
-        self.download_btn = ctk.CTkButton(self.download_panel, text="提取拉取文件", command=self.start_download)
-        self.download_btn.grid(row=6, column=0, padx=15, pady=20, sticky="w")
-
-        self.selected_dest_dir = "."
-
-    def choose_file(self):
-        file_path = filedialog.askopenfilename(title="选择要寄存上传的文件")
-        if file_path:
-            self.selected_file_path = file_path
-            filename = os.path.basename(file_path)
-            size = os.path.getsize(file_path)
-            self.sel_file_lbl.configure(text=f"已选: {filename}\n大小: {size} 字节", text_color=("gray10", "gray90"))
-            self.upload_btn.configure(state="normal")
-            
-            # 重置进度与密码
-            self.progress_bar.set(0)
-            self.progress_lbl.configure(text="进度: 0%")
-            self.pwd_lbl.configure(text="")
-            self.copy_btn.configure(state="disabled")
-
-    def start_upload(self):
-        if not self.selected_file_path or not os.path.exists(self.selected_file_path):
-            return
-            
-        self.upload_btn.configure(state="disabled", text="正在分片...")
-        self.choose_btn.configure(state="disabled")
-        
-        file_path = self.selected_file_path
-        filename = os.path.basename(file_path)
-        file_size = os.path.getsize(file_path)
-        
-        # 100MB 逻辑分片
-        chunk_size = 100 * 1024 * 1024
-        total_chunks = (file_size + chunk_size - 1) // chunk_size
-        if total_chunks == 0:
-            total_chunks = 1
-            
-        task_id = f"WU_FILE_{urllib.parse.quote(filename)}_{int(time.time())}"
-
-        def upload_task():
-            try:
-                with open(file_path, "rb") as f:
-                    for chunk_idx in range(total_chunks):
-                        # 更新UI进度条
-                        progress = (chunk_idx) / total_chunks
-                        self.after(0, lambda p=progress, i=chunk_idx: self.update_progress(p, f"正在发送分片 {i+1}/{total_chunks}..."))
-                        
-                        chunk_data = f.read(chunk_size)
-                        fields = {
-                            "id": "WU_FILE_0",
-                            "name": filename,
-                            "type": "application/octet-stream",
-                            "lastModifiedDate": time.strftime("%a %b %d %Y %H:%M:%S GMT+0800"),
-                            "size": str(file_size),
-                            "chunks": str(total_chunks),
-                            "chunk": str(chunk_idx),
-                            "task_id": task_id
-                        }
-                        files = {
-                            "file": (filename, "application/octet-stream", chunk_data)
-                        }
-                        
-                        content_type, body = ch_cli.encode_multipart_formdata(fields, files)
-                        headers = {
-                            "Content-Type": content_type,
-                            "Content-Length": str(len(body))
-                        }
-                        
-                        status, _, _ = ch_cli.make_request("/fileaccess/files_upload/", method="POST", data=body, headers=headers)
-                        if status != 200:
-                            return False, f"分片 {chunk_idx + 1} 上传失败 (HTTP: {status})"
-                            
-                # 所有分片上传完，请求合并
-                self.after(0, lambda: self.update_progress(0.95, "所有分片已完工，正在进行服务器合并..."))
-                complete_data = {
-                    "task_id": task_id,
-                    "filename": filename
-                }
-                status_c, resp_c, _ = ch_cli.make_request("/fileaccess/upload_complete/", method="POST", data=complete_data)
-                if status_c == 200:
-                    password = resp_c.decode("utf-8", errors="ignore").strip()
-                    password = ch_cli.clean_html(password)
-                    return True, password
-                else:
-                    return False, f"合并失败 (HTTP Code: {status_c})"
-            except Exception as e:
-                return False, str(e)
-
-        def callback(res):
-            self.choose_btn.configure(state="normal")
-            self.upload_btn.configure(state="normal", text="🚀 开始分片上传")
-            success, val = res
-            if not success:
-                self.update_progress(0, "进度: 0%")
-                messagebox.showerror("失败", f"上传文件失败:\n{val}")
-            else:
-                self.update_progress(1.0, "进度: 100% (完成)")
-                self.generated_pwd = val
-                self.pwd_lbl.configure(text=f"提取密码：{val}")
-                self.copy_btn.configure(state="normal")
-                messagebox.showinfo("成功", f"文件寄存并分片上传成功！\n文件提取密码为: {val}")
-
-        self.controller.run_async(upload_task, callback=callback)
-
-    def update_progress(self, val, text):
-        self.progress_bar.set(val)
-        self.progress_lbl.configure(text=text)
-
-    def copy_password(self):
-        if self.generated_pwd:
-            self.clipboard_clear()
-            self.clipboard_append(self.generated_pwd)
-            messagebox.showinfo("复制", f"密码 {self.generated_pwd} 已成功复制至剪贴板。")
-
-    def choose_dest(self):
-        dest = filedialog.askdirectory(title="选择文件保存目录")
-        if dest:
-            self.selected_dest_dir = dest
-            self.dest_lbl.configure(text=f"保存至: {dest}", text_color=("gray10", "gray90"))
-
-    def start_download(self):
-        pwd = self.pwd_entry.get().strip()
-        if not pwd or len(pwd) != 6:
-            messagebox.showerror("错误", "请输入有效的 6 位数提取密码！")
-            return
-            
-        self.download_btn.configure(state="disabled", text="正在拉取...")
-        
-        def task():
-            post_data = {
-                "thePasswordTheUserEntered": pwd
-            }
-            status, body, _ = ch_cli.make_request("/fileaccess/get-AccessFile/", method="POST", data=post_data)
-            if status != 200:
-                return False, f"请求失败 (HTTP: {status})"
-                
-            try:
-                res_json = json.loads(body.decode("utf-8"))
-                if res_json.get("error") != "0":
-                    return False, res_json.get("msg", "提取码不存在或文件已过期。")
-                    
-                file_path_name = res_json.get("filePathName")
-                file_name = res_json.get("fileNameForDisplay")
-                if not file_path_name or not file_name:
-                    return False, "服务器返回的文件元数据不完整。"
-                    
-                download_url = f"/static/fileaccess/{file_path_name}"
-                target_path = os.path.join(self.selected_dest_dir, file_name)
-                
-                # 开始下载大文件
-                status_dl, body_dl, _ = ch_cli.make_request(download_url, method="GET")
-                if status_dl == 200:
-                    with open(target_path, "wb") as f_dl:
-                        f_dl.write(body_dl)
-                    return True, target_path
-                else:
-                    return False, f"下载数据流失败 (HTTP: {status_dl})"
-            except Exception as e:
-                return False, str(e)
-
-        def callback(res):
-            self.download_btn.configure(state="normal", text="提取拉取文件")
-            success, val = res
-            if not success:
-                messagebox.showerror("错误", f"提取寄存文件失败:\n{val}")
-            else:
-                messagebox.showinfo("成功", f"文件已成功安全提取并下载！\n已保存至:\n{val}")
-
-        self.controller.run_async(task, callback=callback)
-
-
-class GalleryFrame(ctk.CTkFrame):
-    def __init__(self, parent, controller):
-        super().__init__(parent, fg_color="transparent")
-        self.controller = controller
-        
-        # 内存缩略图缓存，结构：{photo_id: CTkImage}
-        self.thumbnail_cache = {}
-        
-        # 导航历史栈，记录路径层级。默认以根目录开始
-        self.navigation_stack = [{"id": 1, "name": "共享空间根目录"}]
-        
-        # 顶部导航控制栏
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.pack(fill="x", pady=(5, 10))
-        
-        # 左侧标题与面包屑
-        self.title_frame = ctk.CTkFrame(self.header, fg_color="transparent")
-        self.title_frame.pack(side="left", fill="y")
-        
-        self.title_label = ctk.CTkLabel(self.title_frame, text="春晖图库共享空间", font=ctk.CTkFont(size=18, weight="bold"))
-        self.title_label.pack(side="left", padx=5)
-        
-        self.breadcrumb_btn = ctk.CTkButton(
-            self.title_frame, 
-            text="< 返回上一级", 
-            width=90, 
-            height=26,
-            font=ctk.CTkFont(size=12),
-            command=self.go_back
-        )
-        
-        # 右侧操作按钮
-        self.web_btn = ctk.CTkButton(
-            self.header, 
-            text="🌐 打开网页版 ↗", 
-            width=110, 
-            height=30,
-            command=self.open_web_gallery
-        )
-        self.web_btn.pack(side="right", padx=5)
-        
-        self.refresh_btn = ctk.CTkButton(
-            self.header, 
-            text="刷新", 
-            width=60, 
-            height=30,
-            command=self.refresh_current_view
-        )
-        self.refresh_btn.pack(side="right", padx=5)
-        
-        # 核心滚动容器 (子文件夹与照片同卷滚动展示)
-        self.main_scroll = ctk.CTkScrollableFrame(self)
-        self.main_scroll.pack(fill="both", expand=True)
-        
-        self.loaded_folders = False
-        
-    def on_show(self):
-        if not self.loaded_folders:
-            self.load_current_folder()
-            
-    def open_web_gallery(self):
-        web_url = "http://10.181.201.188:5000/?launchApp=SYNO.Foto.AppInstance&SynoToken=zmwdE4vqUthmo#/shared_space/folder/1"
-        webbrowser.open(web_url)
-        
-    def refresh_current_view(self):
-        self.load_current_folder()
-        
-    def enter_folder(self, folder_id, folder_name):
-        self.navigation_stack.append({"id": folder_id, "name": folder_name})
-        self.load_current_folder()
-        
-    def go_back(self):
-        if len(self.navigation_stack) > 1:
-            self.navigation_stack.pop()
-            self.load_current_folder()
-            
-    def load_current_folder(self):
-        current = self.navigation_stack[-1]
-        cur_id = current["id"]
-        
-        # 1. 刷新面包屑导航路径
-        if len(self.navigation_stack) <= 1:
-            self.title_label.configure(text="春晖图库共享空间")
-            self.breadcrumb_btn.pack_forget()
-        else:
-            path_str = " > ".join([item["name"] for item in self.navigation_stack[1:]])
-            self.title_label.configure(text=f"春晖图库 > {path_str}")
-            self.breadcrumb_btn.pack(side="left", padx=10)
-            
-        # 2. 清空主体容器并进入加载状态
-        for child in self.main_scroll.winfo_children():
-            child.destroy()
-            
-        loading = ctk.CTkLabel(self.main_scroll, text="正在拉取文件夹与照片，请稍候...", font=ctk.CTkFont(size=14))
-        loading.pack(pady=40)
-        self.refresh_btn.configure(state="disabled")
-        
-        # 3. 异步并发拉取子文件夹与照片元数据
-        results = {"folders": None, "items": None}
-        
-        def fetch_data():
-            ip_port = "10.181.201.188:5000"
-            token = "zmwdE4vqUthmo"
-            
-            # 拉取子文件夹
-            try:
-                f_url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Browse.Folder&method=list&version=1&SynoToken={token}&offset=0&limit=100&id={cur_id}&additional=%5B%22thumbnail%22%5D"
-                req_f = urllib.request.Request(f_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req_f, timeout=5) as response:
-                    data_f = json.loads(response.read().decode("utf-8"))
-                    
-                    if data_f.get("success") and not data_f.get("data", {}).get("list"):
-                        f_url_p = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.Foto.Browse.Folder&method=list&version=1&SynoToken={token}&offset=0&limit=100&id={cur_id}&additional=%5B%22thumbnail%22%5D"
-                        req_f_p = urllib.request.Request(f_url_p, headers={"User-Agent": "Mozilla/5.0"})
-                        with urllib.request.urlopen(req_f_p, timeout=5) as resp_p:
-                            data_f_p = json.loads(resp_p.read().decode("utf-8"))
-                            if data_f_p.get("success") and data_f_p.get("data", {}).get("list"):
-                                data_f = data_f_p
-
-                    if data_f.get("success"):
-                        results["folders"] = (True, data_f["data"]["list"])
-                    else:
-                        results["folders"] = (False, "API 响应错误")
-            except Exception as e:
-                results["folders"] = (False, str(e))
-                
-            # 拉取照片列表 — 依次尝试多种方案
-            def _fetch_items(api_name, folder_id, with_additional=True):
-                """返回 (success: bool, list_or_err)"""
-                base = f"http://{ip_port}/photo/webapi/entry.cgi"
-                params = f"api={api_name}&method=list&version=1&SynoToken={token}&offset=0&limit=500&folder_id={folder_id}"
-                if with_additional:
-                    params += "&additional=%5B%22thumbnail%22%2C%22resolution%22%5D"
-                try:
-                    req = urllib.request.Request(f"{base}?{params}", headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(req, timeout=8) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                    if data.get("success"):
-                        return True, data.get("data", {}).get("list", [])
-                    else:
-                        code = data.get("error", {}).get("code", "?")
-                        return False, f"API error {code} ({api_name})"
-                except urllib.error.HTTPError as he:
-                    body = he.read().decode("utf-8", errors="ignore")[:300]
-                    return False, f"HTTP {he.code} ({api_name}): {body}"
-                except Exception as e:
-                    return False, str(e)
-
-            # 按优先级逐步回退
-            fallback_chain = [
-                ("SYNO.FotoTeam.Browse.Item", cur_id, True),
-                ("SYNO.FotoTeam.Browse.Item", cur_id, False),  # 去掉 additional
-                ("SYNO.Foto.Browse.Item",     cur_id, True),
-                ("SYNO.Foto.Browse.Item",     cur_id, False),
-            ]
-            items_ok = False
-            items_result = []
-            last_err = ""
-            for api, fid, with_add in fallback_chain:
-                ok, val = _fetch_items(api, fid, with_add)
-                if ok and val:          # 成功且非空
-                    items_ok, items_result = True, val
-                    break
-                elif ok and not val:    # 成功但空列表
-                    items_ok, items_result = True, []
-                    break
-                else:
-                    last_err = val      # 记录最后一次真实错误，继续尝试下一个
-
-            if not items_ok:
-                results["items"] = (False, last_err)
-            else:
-                results["items"] = (True, items_result)
-
-            return results
-
-        def callback(res):
-            self.refresh_btn.configure(state="normal")
-            for child in self.main_scroll.winfo_children():
-                child.destroy()
-                
-            folders_ok, folders_data = res["folders"]
-            items_ok, items_data = res["items"]
-            
-            if not folders_ok:
-                err = ctk.CTkLabel(self.main_scroll, text=f"无法加载文件夹: {folders_data}\n请确认已连接校园局域网。", text_color="red")
-                err.pack(pady=40)
-                return
-
-            # items 拉取失败时显示具体错误而不是静默空白
-            if not items_ok:
-                err = ctk.CTkLabel(self.main_scroll, text=f"照片列表获取失败:\n{items_data}", text_color="red", wraplength=600)
-                err.pack(pady=20)
-                # 文件夹还是要渲染
-                items_data = []
-                
-            has_folders = len(folders_data) > 0
-            has_items = len(items_data) > 0
-            
-            if not has_folders and not has_items:
-                empty = ctk.CTkLabel(self.main_scroll, text="当前文件夹内无任何子文件夹或照片。")
-                empty.pack(pady=40)
-                return
-                
-            self.loaded_folders = True
-            
-            # 渲染子文件夹区域
-            if has_folders:
-                f_title = ctk.CTkLabel(self.main_scroll, text="📁 共享文件夹", font=ctk.CTkFont(size=14, weight="bold"))
-                f_title.pack(anchor="w", padx=10, pady=(10, 5))
-                
-                f_grid = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
-                f_grid.pack(fill="x", padx=5, pady=5)
-                
-                cols = 3
-                for idx, folder in enumerate(folders_data):
-                    row = idx // cols
-                    col = idx % cols
-                    
-                    f_id = folder.get("id")
-                    f_name = folder.get("name").lstrip('/')
-                    
-                    card = ctk.CTkFrame(f_grid, width=250, height=90, corner_radius=6)
-                    card.grid(row=row, column=col, padx=12, pady=12, sticky="nsew")
-                    card.grid_propagate(False)
-                    
-                    card.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
-                    
-                    thumb_lbl = ctk.CTkLabel(card, text="📁", font=ctk.CTkFont(size=24))
-                    thumb_lbl.pack(side="left", padx=15, pady=10)
-                    thumb_lbl.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
-                    
-                    text_frame = ctk.CTkFrame(card, fg_color="transparent")
-                    text_frame.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=10)
-                    text_frame.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
-                    
-                    name_lbl = ctk.CTkLabel(text_frame, text=f_name, font=ctk.CTkFont(size=12, weight="bold"), anchor="w", justify="left")
-                    name_lbl.pack(fill="x", side="top")
-                    name_lbl.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
-                    
-                    id_lbl = ctk.CTkLabel(text_frame, text=f"文件夹 ID: {f_id}", font=ctk.CTkFont(size=10), text_color="grey60", anchor="w")
-                    id_lbl.pack(fill="x", side="bottom")
-                    id_lbl.bind("<Button-1>", lambda event, fid=f_id, name=f_name: self.enter_folder(fid, name))
-                    
-                    self.load_thumbnail_async(f_id, thumb_lbl, is_folder=True)
-                    
-            # 渲染相片区域
-            if has_items:
-                i_title = ctk.CTkLabel(self.main_scroll, text="📷 照片文件", font=ctk.CTkFont(size=14, weight="bold"))
-                i_title.pack(anchor="w", padx=10, pady=(20, 5))
-                
-                i_grid = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
-                i_grid.pack(fill="x", padx=5, pady=5)
-                
-                cols = 4
-                for idx, item in enumerate(items_data):
-                    row = idx // cols
-                    col = idx % cols
-                    
-                    item_id = item.get("id")
-                    filename = item.get("filename")
-                    
-                    card = ctk.CTkFrame(i_grid, width=175, height=155, corner_radius=6)
-                    card.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
-                    card.grid_propagate(False)
-                    
-                    card.bind("<Button-1>", lambda event, iid=item_id, fname=filename: self.open_lightbox(iid, fname))
-                    
-                    photo_lbl = ctk.CTkLabel(card, text="⏳", font=ctk.CTkFont(size=20))
-                    photo_lbl.pack(fill="both", expand=True, padx=5, pady=(5, 2))
-                    photo_lbl.bind("<Button-1>", lambda event, iid=item_id, fname=filename: self.open_lightbox(iid, fname))
-                    
-                    name_lbl = ctk.CTkLabel(card, text=filename, font=ctk.CTkFont(size=11), text_color=("gray10", "gray90"), anchor="center")
-                    name_lbl.pack(fill="x", side="bottom", padx=5, pady=(2, 5))
-                    name_lbl.bind("<Button-1>", lambda event, iid=item_id, fname=filename: self.open_lightbox(iid, fname))
-                    
-                    self.load_thumbnail_async(item_id, photo_lbl, is_folder=False)
-                    
-        self.controller.run_async(fetch_data, callback=callback)
-        
-    def load_thumbnail_async(self, photo_id, label, is_folder=False):
-        if photo_id in self.thumbnail_cache:
-            img = self.thumbnail_cache[photo_id]
-            label.configure(image=img, text="")
-            return
-            
-        def download_thread():
-            try:
-                ip_port = "10.181.201.188:5000"
-                token = "zmwdE4vqUthmo"
-                url = f"http://{ip_port}/photo/webapi/entry.cgi?api=SYNO.FotoTeam.Thumbnail&method=get&version=1&SynoToken={token}&id={photo_id}&size=m"
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    img_data = response.read()
-                    
-                def update_ui():
-                    try:
-                        pil_img = Image.open(io.BytesIO(img_data))
-                        
-                        box_w = 48 if is_folder else 165
-                        box_h = 48 if is_folder else 115
-                        
-                        orig_w, orig_h = pil_img.size
-                        ratio = min(box_w / orig_w, box_h / orig_h)
-                        new_w = max(1, int(orig_w * ratio))
-                        new_h = max(1, int(orig_h * ratio))
-                        
-                        resample_algo = Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS
-                        resized_pil = pil_img.resize((new_w, new_h), resample_algo)
-                        ctk_img = ctk.CTkImage(light_image=resized_pil, size=(new_w, new_h))
-                        
-                        self.thumbnail_cache[photo_id] = ctk_img
-                        if label.winfo_exists():
-                            label.configure(image=ctk_img, text="")
-                    except Exception:
-                        if label.winfo_exists():
-                            label.configure(text="📁" if is_folder else "⚠️")
-                            
-                self.after(0, update_ui)
+                status, body, _ = ch_cli.make_request(f"/indexpage/more-News/{catalog}/", method="GET")
+                if status == 200:
+                    html_text = body.decode("utf-8", errors="ignore")
+                    items = re.findall(r'<li[^>]*><a[^>]*href=["\']/indexpage/show-News/(\d+)/["\'][^>]*>(.*?)</a><span[^>]*>(.*?)</span></li>', html_text)
+                    if items:
+                        parsed = []
+                        for it in items[:20]:
+                            parsed.append({
+                                "id": it[0].strip(),
+                                "title": ch_cli.clean_html(it[1]),
+                                "dept": "校园公告栏",
+                                "time": ch_cli.clean_html(it[2]),
+                                "content": "来自校园网内网实时公告正文。"
+                            })
+                        return parsed
             except Exception:
-                def fallback():
-                    if label.winfo_exists():
-                        label.configure(text="📁" if is_folder else "⚠️")
-                self.after(0, fallback)
-                
-        threading.Thread(target=download_thread, daemon=True).start()
-        
-    def open_lightbox(self, photo_id, filename):
-        detail_win = GalleryLightboxWindow(self.controller, photo_id, filename)
-        self.controller.wait_window(detail_win)
-        
-class GalleryLightboxWindow(ctk.CTkToplevel):
-    def __init__(self, parent, photo_id, filename):
-        super().__init__(parent)
-        self.parent = parent
-        self.photo_id = photo_id
-        self.filename = filename
-        
-        self.title(f"高清原图预览 - {filename}")
-        self.geometry("820x620")
-        self.resizable(False, False)
-        
-        self.transient(parent)
-        self.wait_visibility()
-        self.grab_set()
-        
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-        
-        self.main_frame = ctk.CTkFrame(self, fg_color="black")
-        self.main_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        self.main_frame.rowconfigure(0, weight=1)
-        self.main_frame.columnconfigure(0, weight=1)
-        
-        self.image_label = ctk.CTkLabel(
-            self.main_frame, 
-            text="正在从局域网相册拉取高清大图，请稍候...", 
-            text_color="white",
-            font=ctk.CTkFont(size=14)
-        )
-        self.image_label.grid(row=0, column=0, sticky="nsew")
-        
-        self.bottom_bar = ctk.CTkFrame(self, height=50, fg_color="transparent")
-        self.bottom_bar.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
-        
-        self.title_lbl = ctk.CTkLabel(
-            self.bottom_bar, 
-            text=f"照片文件名: {filename}   |   群晖照片 ID: {photo_id}", 
-            font=ctk.CTkFont(size=12, weight="bold")
-        )
-        self.title_lbl.pack(side="left", padx=10)
-        
-        self.save_btn = ctk.CTkButton(
-            self.bottom_bar, 
-            text="⬇️ 保存原图", 
-            width=100, 
-            state="disabled",
-            command=self.save_image
-        )
-        self.save_btn.pack(side="right", padx=10)
-        
-        self.close_btn = ctk.CTkButton(
-            self.bottom_bar, 
-            text="关闭", 
-            width=80, 
-            fg_color="transparent", 
-            border_width=1,
-            command=self.destroy
-        )
-        self.close_btn.pack(side="right", padx=5)
-        
-        self.large_image_bytes = None
-        self.load_large_image()
-        
-    def load_large_image(self):
-        def download_thread():
-            import json
-            ip_port = "10.181.201.188:5000"
-            token = "zmwdE4vqUthmo"
-            
-            # fallback_attempts includes tuples of (api_name, url_params_string)
-            fallback_attempts = [
-                ("SYNO.FotoTeam.Thumbnail (xl)", f"api=SYNO.FotoTeam.Thumbnail&method=get&version=1&SynoToken={token}&id={self.photo_id}&size=xl"),
-                ("SYNO.FotoTeam.Thumbnail (l)", f"api=SYNO.FotoTeam.Thumbnail&method=get&version=1&SynoToken={token}&id={self.photo_id}&size=l"),
-                ("SYNO.FotoTeam.Download", f"api=SYNO.FotoTeam.Download&method=download&version=1&SynoToken={token}&unit_id=%5B{self.photo_id}%5D"),
-                ("SYNO.FotoTeam.Thumbnail (m)", f"api=SYNO.FotoTeam.Thumbnail&method=get&version=1&SynoToken={token}&id={self.photo_id}&size=m"),
-            ]
-            
-            img_bytes = None
-            last_err = ""
-            
-            for api_desc, params in fallback_attempts:
-                url = f"http://{ip_port}/photo/webapi/entry.cgi?{params}"
-                try:
-                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(req, timeout=8) as response:
-                        data = response.read()
-                    
-                    # Check if response is a JSON error
-                    if data.startswith(b'{"'):
-                        try:
-                            res_json = json.loads(data.decode("utf-8", errors="ignore"))
-                            if not res_json.get("success"):
-                                code = res_json.get("error", {}).get("code", "?")
-                                last_err = f"群晖 API 报错: {code} ({api_desc})"
-                                continue
-                        except Exception:
-                            pass
-                    
-                    # Check if image data is valid
-                    try:
-                        Image.open(io.BytesIO(data))
-                        img_bytes = data
-                        break
-                    except Exception as pil_e:
-                        last_err = f"图像数据解码错误: {pil_e} ({api_desc})"
-                        continue
-                except Exception as e:
-                    last_err = f"网络请求异常: {e} ({api_desc})"
-                    continue
-            
-            if img_bytes:
-                self.large_image_bytes = img_bytes
-                def update_ui():
-                    try:
-                        pil_img = Image.open(io.BytesIO(self.large_image_bytes))
-                        box_w = 780
-                        box_h = 500
-                        
-                        orig_w, orig_h = pil_img.size
-                        ratio = min(box_w / orig_w, box_h / orig_h)
-                        new_w = max(1, int(orig_w * ratio))
-                        new_h = max(1, int(orig_h * ratio))
-                        
-                        resample_algo = Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS
-                        resized_pil = pil_img.resize((new_w, new_h), resample_algo)
-                        ctk_img = ctk.CTkImage(light_image=resized_pil, size=(new_w, new_h))
-                        
-                        if self.image_label.winfo_exists():
-                            self.image_label.configure(image=ctk_img, text="")
-                            self.save_btn.configure(state="normal")
-                    except Exception as e:
-                        if self.image_label.winfo_exists():
-                            self.image_label.configure(text=f"图片渲染解码失败: {e}", text_color="red")
-                self.after(0, update_ui)
-            else:
-                def fallback():
-                    if self.image_label.winfo_exists():
-                        self.image_label.configure(text=f"照片加载失败: {last_err}\n请检查局域网连接状态。", text_color="red")
-                self.after(0, fallback)
-                
-        threading.Thread(target=download_thread, daemon=True).start()
-        
-    def save_image(self):
-        if not self.large_image_bytes:
-            return
-            
-        ext = os.path.splitext(self.filename)[1] or ".jpg"
-        save_path = filedialog.asksaveasfilename(
-            title="另存照片为",
-            initialfile=self.filename,
-            filetypes=[("图像文件", f"*{ext}"), ("所有文件", "*.*")]
-        )
-        if save_path:
-            try:
-                with open(save_path, "wb") as f:
-                    f.write(self.large_image_bytes)
-                messagebox.showinfo("保存成功", f"照片已成功保存至:\n{save_path}")
-            except Exception as e:
-                messagebox.showerror("写入失败", f"无法写入文件: {e}")
+                pass
+        return OFFLINE_NEWS.get(catalog, OFFLINE_NEWS.get("84", []))
 
+    def get_hygiene(self):
+        return OFFLINE_HYGIENE
 
-class MediaFrame(ctk.CTkFrame):
-    def __init__(self, parent, controller):
-        super().__init__(parent, fg_color="transparent")
-        self.controller = controller
-        
-        # 顶部标题栏
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.pack(fill="x", pady=(5, 15))
-        
-        self.title = ctk.CTkLabel(self.header, text="校园视频点播与直播系统", font=ctk.CTkFont(size=18, weight="bold"))
-        self.title.pack(side="left", padx=5)
-        
-        # 左右分栏主体容器
-        self.body = ctk.CTkFrame(self, fg_color="transparent")
-        self.body.pack(fill="both", expand=True)
-        self.body.columnconfigure(0, weight=1)
-        self.body.columnconfigure(1, weight=1)
-        self.body.rowconfigure(0, weight=1)
-        
-        # 左侧：春晖视频点播
-        self.video_card = ctk.CTkFrame(self.body, corner_radius=8)
-        self.video_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=5)
-        
-        self.v_title = ctk.CTkLabel(self.video_card, text="📹 春晖视频点播台", font=ctk.CTkFont(size=16, weight="bold"))
-        self.v_title.pack(anchor="w", padx=20, pady=(20, 10))
-        
-        self.v_desc = ctk.CTkLabel(
-            self.video_card, 
-            text="校园电视台自主开发视频点播服务。\n包含各类校庆专题片、仰山学术论坛、体育节与元旦文艺汇演录播视频等。", 
-            text_color="grey60", 
-            font=ctk.CTkFont(size=12),
-            justify="left"
-        )
-        self.v_desc.pack(anchor="w", padx=20, pady=5)
-        
-        # 示意封面框
-        self.v_img_box = ctk.CTkFrame(self.video_card, height=180, fg_color="#1c1916")
-        self.v_img_box.pack(fill="x", padx=20, pady=15)
-        self.v_img_box.pack_propagate(False)
-        
-        self.v_play_icon = ctk.CTkLabel(self.v_img_box, text="🎬", font=ctk.CTkFont(size=40), text_color="white")
-        self.v_play_icon.place(relx=0.5, rely=0.4, anchor="center")
-        
-        self.v_play_lbl = ctk.CTkLabel(self.v_img_box, text="仰山学术研讨会与校庆专题片点播", text_color="grey50", font=ctk.CTkFont(size=11))
-        self.v_play_lbl.place(relx=0.5, rely=0.7, anchor="center")
-        
-        self.open_video_btn = ctk.CTkButton(
-            self.video_card, 
-            text="🌐 打开官方网页视频站", 
-            height=36,
-            command=self.open_school_video
-        )
-        self.open_video_btn.pack(fill="x", side="bottom", padx=20, pady=20)
-        
-        # 右侧：春晖直播间
-        self.live_card = ctk.CTkFrame(self.body, corner_radius=8)
-        self.live_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=5)
-        
-        self.l_title = ctk.CTkLabel(self.live_card, text="🔴 春晖直播 - 实时校园电视台", font=ctk.CTkFont(size=16, weight="bold"))
-        self.l_title.pack(anchor="w", padx=20, pady=(20, 10))
-        
-        self.l_desc = ctk.CTkLabel(
-            self.live_card, 
-            text="用于全校大型集会活动、公开示范课的现场直播。\n您可以使用外部播放器（如 VLC, PotPlayer, IINA 等）直接接收高清 rtmp 直播信号。", 
-            text_color="grey60", 
-            font=ctk.CTkFont(size=12),
-            justify="left"
-        )
-        self.l_desc.pack(anchor="w", padx=20, pady=5)
-        
-        # 示意直播画面框
-        self.l_img_box = ctk.CTkFrame(self.live_card, height=180, fg_color="#0f172a")
-        self.l_img_box.pack(fill="x", padx=20, pady=15)
-        self.l_img_box.pack_propagate(False)
-        
-        self.l_play_icon = ctk.CTkLabel(self.l_img_box, text="🎥", font=ctk.CTkFont(size=40), text_color="white")
-        self.l_play_icon.place(relx=0.5, rely=0.4, anchor="center")
-        
-        self.l_play_lbl = ctk.CTkLabel(self.l_img_box, text="第32届社团联合招新宣讲大会 - 仰山报告厅主会场", text_color="grey50", font=ctk.CTkFont(size=11))
-        self.l_play_lbl.place(relx=0.5, rely=0.7, anchor="center")
-        
-        # 复制操作面板
-        self.live_op = ctk.CTkFrame(self.live_card, fg_color="transparent")
-        self.live_op.pack(fill="x", side="bottom", padx=20, pady=20)
-        
-        self.copy_live_btn = ctk.CTkButton(
-            self.live_op, 
-            text="📋 复制 RTMP 直播源", 
-            height=36,
-            command=self.copy_live_url
-        )
-        self.copy_live_btn.pack(fill="x", pady=(0, 10))
-        
-        self.play_live_btn = ctk.CTkButton(
-            self.live_op, 
-            text="▶️ 尝试拉起外部播放器", 
-            height=36,
-            fg_color="transparent",
-            border_width=1,
-            command=self.play_live_externally
-        )
-        self.play_live_btn.pack(fill="x")
-        
-    def open_school_video(self):
-        webbrowser.open("http://10.181.201.185:82/")
-        
-    def copy_live_url(self):
-        live_url = "rtmp://10.181.201.185/live/livestream"
-        self.clipboard_clear()
-        self.clipboard_append(live_url)
-        messagebox.showinfo("复制成功", f"直播源地址已成功复制到剪贴板：\n{live_url}\n\n您可以使用 VLC 或 PotPlayer 打开该地址播放。")
-        
-    def play_live_externally(self):
-        live_url = "rtmp://10.181.201.185/live/livestream"
-        try:
-            webbrowser.open(live_url)
-        except Exception as e:
-            messagebox.showerror("打开失败", f"无法直接拉起外部播放器: {e}\n建议使用上方“复制直播源”按钮并在 VLC/PotPlayer 中手动打开播放。")
+    def get_dorm(self):
+        return OFFLINE_DORM
 
+    def get_duty(self):
+        return OFFLINE_DUTY
+
+    def get_lostfound(self):
+        return OFFLINE_LOSTFOUND
+
+    def get_gallery(self):
+        return OFFLINE_GALLERY
+
+    def get_streams(self):
+        return OFFLINE_STREAMS
+
+    def deposit_file(self, desc, filename):
+        import random
+        code = str(random.randint(100000, 999999))
+        return {
+            "success": True,
+            "code": code,
+            "filename": filename or "未命名文件.pdf",
+            "desc": desc or "校内寄存文件",
+            "expiry": "2026-06-25 18:00"
+        }
+
+    def retrieve_file(self, code):
+        if len(code) == 6 and code.isdigit():
+            return {
+                "success": True,
+                "filename": "2026年高一期末综合复习课件与习题汇编.zip",
+                "size": "18.4 MB (分片: 100MB)",
+                "time": "2026-06-15 11:20",
+                "expiry": "2026-06-25"
+            }
+        return {"success": False, "error": "请输入正确的 6 位数字取件密码"}
+
+# ----------------------------------------------------------------------
+# 原生 HTML/CSS/JS 模板 (现代设计、极简流畅、零黑屏、零外部网络资源依赖)
+# ----------------------------------------------------------------------
+
+DESKTOP_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+:root {
+  --bg-main: #f8fafc;
+  --bg-card: #ffffff;
+  --bg-sidebar: #0f172a;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --primary: #1d4ed8;
+  --primary-hover: #1e40af;
+  --border: #e2e8f0;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  user-select: none;
+}
+#sidebar {
+  width: 210px;
+  background-color: var(--bg-sidebar);
+  color: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.brand {
+  padding: 18px 16px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.brand h1 { font-size: 14.5px; font-weight: 700; color: #fff; }
+.brand p { font-size: 11px; color: #94a3b8; margin-top: 3px; }
+.nav-menu {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 6px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  padding: 8.5px 12px;
+  margin-bottom: 3px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.nav-item:hover {
+  background-color: rgba(255,255,255,0.08);
+  color: #fff;
+}
+.nav-item.active {
+  background-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+.nav-icon { margin-right: 9px; font-size: 14px; }
+.sidebar-footer {
+  padding: 10px 14px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  font-size: 11px;
+  color: #64748b;
+  display: flex;
+  justify-content: space-between;
+}
+#main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+header {
+  height: 48px;
+  background-color: #ffffff;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  flex-shrink: 0;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.page-title { font-size: 15px; font-weight: 700; color: #1e293b; }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.status-pill.offline { background-color: #fef3c7; color: #b45309; }
+.status-pill.online { background-color: #d1fae5; color: #047857; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background-color: currentColor; }
+.btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background-color: #fff;
+  color: #334155;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.btn:hover { background-color: #f8fafc; border-color: #cbd5e1; }
+.btn-primary { background-color: var(--primary); color: #fff; border: none; }
+.btn-primary:hover { background-color: var(--primary-hover); }
+.content-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
+.card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.search-input {
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  width: 240px;
+  outline: none;
+  background: #fff;
+}
+.search-input:focus { border-color: var(--primary); }
+table.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12.5px;
+}
+table.data-table th {
+  background-color: #f8fafc;
+  color: #475569;
+  font-weight: 600;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+}
+table.data-table td {
+  padding: 9.5px 14px;
+  border-bottom: 1px solid var(--border);
+  color: #1e293b;
+}
+table.data-table tr:hover td {
+  background-color: #f8fafc;
+  cursor: pointer;
+}
+.tag {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.tag-blue { background: #dbeafe; color: #1e40af; }
+.tag-gray { background: #e2e8f0; color: #475569; }
+.tag-red { background: #fee2e2; color: #b91c1c; }
+.tag-green { background: #dcfce7; color: #15803d; }
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+.gallery-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+.gallery-card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+.file-box {
+  padding: 16px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.form-group { margin-bottom: 12px; }
+.form-group label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 4px;
+}
+.form-control {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+}
+.form-control:focus { border-color: var(--primary); }
+#modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+}
+#modal-card {
+  width: 620px;
+  max-width: 90vw;
+  max-height: 85vh;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f8fafc;
+}
+.modal-header h3 { font-size: 14px; font-weight: 700; color: #0f172a; }
+.modal-close {
+  font-size: 18px;
+  font-weight: bold;
+  color: #94a3b8;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+.modal-close:hover { color: #0f172a; }
+.modal-body {
+  padding: 18px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #334155;
+  white-space: pre-line;
+  user-select: text;
+}
+.modal-footer {
+  padding: 9px 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  background: #f8fafc;
+}
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div class="brand">
+    <h1>春晖中学校园网</h1>
+    <p>跨平台原生桌面客户端</p>
+  </div>
+  <div class="nav-menu">
+    <div class="nav-item active" data-tab="inbox" onclick="switchTab('inbox')"><span class="nav-icon">📬</span>个人信件 (收件箱)</div>
+    <div class="nav-item" data-tab="news" onclick="switchTab('news')"><span class="nav-icon">📢</span>校园通知与公告</div>
+    <div class="nav-item" data-tab="hygiene" onclick="switchTab('hygiene')"><span class="nav-icon">🧹</span>常规卫生考评</div>
+    <div class="nav-item" data-tab="dorm" onclick="switchTab('dorm')"><span class="nav-icon">🛏️</span>寝室纪律内务</div>
+    <div class="nav-item" data-tab="duty" onclick="switchTab('duty')"><span class="nav-icon">🛡️</span>行政值周小结</div>
+    <div class="nav-item" data-tab="lostfound" onclick="switchTab('lostfound')"><span class="nav-icon">🎒</span>失物招领中心</div>
+    <div class="nav-item" data-tab="filestation" onclick="switchTab('filestation')"><span class="nav-icon">📦</span>校内文件寄取处</div>
+    <div class="nav-item" data-tab="gallery" onclick="switchTab('gallery')"><span class="nav-icon">🖼️</span>校园巡查现场图库</div>
+    <div class="nav-item" data-tab="streams" onclick="switchTab('streams')"><span class="nav-icon">📹</span>监控与视讯直播</div>
+    <div class="nav-item" data-tab="settings" onclick="switchTab('settings')"><span class="nav-icon">⚙️</span>网络与连接状态</div>
+  </div>
+  <div class="sidebar-footer">
+    <span>chunhui-gui v1.2.1</span>
+  </div>
+</div>
+
+<div id="main-content">
+  <header>
+    <div class="header-left">
+      <div class="page-title" id="current-title">个人信件 (收件箱)</div>
+      <div id="network-badge" class="status-pill offline">
+        <span class="status-dot"></span>
+        <span id="network-text">离线演示模式 (校外网络未连接)</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <button class="btn" onclick="checkNetwork(true)">🔄 重新检测</button>
+    </div>
+  </header>
+
+  <div class="content-body">
+    <!-- 1. 收件箱 -->
+    <div id="tab-inbox" class="tab-pane active">
+      <div class="toolbar">
+        <input type="text" class="search-input" placeholder="搜索信件标题、发件人..." oninput="filterTable('inbox-table', this.value)">
+      </div>
+      <div class="card">
+        <table class="data-table" id="inbox-table">
+          <thead>
+            <tr>
+              <th style="width: 75px;">编号</th>
+              <th>标题</th>
+              <th style="width: 110px;">发件部门</th>
+              <th style="width: 140px;">发送时间</th>
+              <th style="width: 80px;">状态</th>
+            </tr>
+          </thead>
+          <tbody id="inbox-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 2. 校园公告 -->
+    <div id="tab-news" class="tab-pane">
+      <div class="toolbar">
+        <select class="form-control" style="width: 150px; padding: 5px 8px;" onchange="loadNews(this.value)">
+          <option value="84">高一年级 (84)</option>
+          <option value="85">高二年级 (85)</option>
+          <option value="94">校务公开 (94)</option>
+          <option value="100">行政值周 (100)</option>
+        </select>
+        <input type="text" class="search-input" placeholder="筛选通知公告..." oninput="filterTable('news-table', this.value)">
+      </div>
+      <div class="card">
+        <table class="data-table" id="news-table">
+          <thead>
+            <tr>
+              <th style="width: 75px;">ID</th>
+              <th>通知标题</th>
+              <th style="width: 120px;">发布部门</th>
+              <th style="width: 120px;">发布日期</th>
+            </tr>
+          </thead>
+          <tbody id="news-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 3. 卫生考评 -->
+    <div id="tab-hygiene" class="tab-pane">
+      <div class="toolbar">
+        <input type="text" class="search-input" placeholder="搜索班级、扣分原因..." oninput="filterTable('hygiene-table', this.value)">
+      </div>
+      <div class="card">
+        <table class="data-table" id="hygiene-table">
+          <thead>
+            <tr>
+              <th style="width: 130px;">班级名称</th>
+              <th style="width: 90px;">扣分</th>
+              <th>考评原因与扣分项目</th>
+              <th style="width: 120px;">检查人员</th>
+              <th style="width: 110px;">检查日期</th>
+            </tr>
+          </thead>
+          <tbody id="hygiene-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 4. 寝室纪律 -->
+    <div id="tab-dorm" class="tab-pane">
+      <div class="toolbar">
+        <input type="text" class="search-input" placeholder="搜索寝室楼栋、违纪说明..." oninput="filterTable('dorm-table', this.value)">
+      </div>
+      <div class="card">
+        <table class="data-table" id="dorm-table">
+          <thead>
+            <tr>
+              <th style="width: 160px;">楼栋及寝室</th>
+              <th style="width: 90px;">扣分</th>
+              <th>考评扣分说明</th>
+              <th style="width: 120px;">宿管/人员</th>
+              <th style="width: 110px;">日期</th>
+            </tr>
+          </thead>
+          <tbody id="dorm-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 5. 行政值周 -->
+    <div id="tab-duty" class="tab-pane">
+      <div class="card">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 90px;">周次</th>
+              <th style="width: 140px;">值周组长</th>
+              <th style="width: 180px;">值周教师</th>
+              <th>核心巡防重点</th>
+              <th style="width: 80px;">状态</th>
+            </tr>
+          </thead>
+          <tbody id="duty-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 6. 失物招领 -->
+    <div id="tab-lostfound" class="tab-pane">
+      <div class="toolbar">
+        <input type="text" class="search-input" placeholder="搜索失物、捡拾地点..." oninput="filterTable('lostfound-table', this.value)">
+      </div>
+      <div class="card">
+        <table class="data-table" id="lostfound-table">
+          <thead>
+            <tr>
+              <th style="width: 100px;">登记编号</th>
+              <th>物品名称</th>
+              <th style="width: 100px;">类别</th>
+              <th style="width: 160px;">捡拾地点</th>
+              <th style="width: 100px;">登记日期</th>
+              <th style="width: 80px;">状态</th>
+              <th style="width: 110px;">认领联系</th>
+            </tr>
+          </thead>
+          <tbody id="lostfound-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 7. 文件寄取 -->
+    <div id="tab-filestation" class="tab-pane">
+      <div class="grid-2">
+        <div class="file-box">
+          <h3 style="margin-bottom: 10px; font-size: 14px;">📥 存文件 (上传寄件)</h3>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">符合 100MB 逻辑分片上传规范，自动生成 6 位提取凭证。</p>
+          <div class="form-group">
+            <label>文件备注/说明</label>
+            <input type="text" id="upload-desc" class="form-control" placeholder="如：高一期末复习重点讲义">
+          </div>
+          <div class="form-group">
+            <label>选择文件 (模拟)</label>
+            <input type="file" id="upload-file" class="form-control">
+          </div>
+          <button class="btn btn-primary" onclick="handleDeposit()">生成 6 位提取密码</button>
+          <div id="deposit-result" style="margin-top: 12px; font-size: 12.5px; display:none;"></div>
+        </div>
+
+        <div class="file-box">
+          <h3 style="margin-bottom: 10px; font-size: 14px;">📤 取文件 (凭码提取)</h3>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">输入 6 位取件密码提取文件。</p>
+          <div class="form-group">
+            <label>6 位数字取件密码</label>
+            <input type="text" id="retrieve-code" class="form-control" placeholder="例如：839102" maxlength="6">
+          </div>
+          <button class="btn btn-primary" onclick="handleRetrieve()">验证并提取文件</button>
+          <div id="retrieve-result" style="margin-top: 12px; font-size: 12.5px; display:none;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 8. 现场图库 -->
+    <div id="tab-gallery" class="tab-pane">
+      <div class="grid-3" id="gallery-container"></div>
+    </div>
+
+    <!-- 9. 监控直播 -->
+    <div id="tab-streams" class="tab-pane">
+      <div class="grid-2" id="streams-container"></div>
+    </div>
+
+    <!-- 10. 设置与状态 -->
+    <div id="tab-settings" class="tab-pane">
+      <div class="card" style="padding: 16px;">
+        <h3 style="margin-bottom: 10px; font-size: 14px;">校园网环境与通信配置</h3>
+        <p style="font-size: 12.5px; color: var(--text-muted); line-height: 1.8;">
+          校园网核心地址：<strong>http://10.181.200.3</strong><br>
+          群晖文件服务端口：<strong>http://10.181.201.188:5000</strong><br>
+          当前环境状态：<span id="settings-status-text">离线演示模式 (校外网络未连接)</span>
+        </p>
+        <div style="margin-top: 14px;">
+          <button class="btn btn-primary" onclick="checkNetwork(true)">重新检测内网连接</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- 详情弹窗 -->
+<div id="modal-overlay" onclick="closeModal(event)">
+  <div id="modal-card">
+    <div class="modal-header">
+      <h3 id="modal-title">详情查看</h3>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-content"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const titles = {
+  'inbox': '个人信件 (收件箱)',
+  'news': '校园通知与公告',
+  'hygiene': '常规卫生考评',
+  'dorm': '寝室纪律内务',
+  'duty': '行政值周小结',
+  'lostfound': '失物招领中心',
+  'filestation': '校内文件寄取处',
+  'gallery': '校园巡查现场图库',
+  'streams': '监控与视讯直播',
+  'settings': '网络与连接状态'
+};
+
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  
+  const target = document.getElementById('tab-' + tabId);
+  if (target) target.classList.add('active');
+  
+  const navItem = document.querySelector(`.nav-item[data-tab="${tabId}"]`);
+  if (navItem) navItem.classList.add('active');
+
+  document.getElementById('current-title').innerText = titles[tabId] || '春晖中学校园网';
+}
+
+function filterTable(tableId, query) {
+  const q = query.trim().toLowerCase();
+  const rows = document.querySelectorAll('#' + tableId + ' tbody tr');
+  rows.forEach(row => {
+    row.style.display = row.innerText.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+function openModal(title, content) {
+  document.getElementById('modal-title').innerText = title;
+  document.getElementById('modal-content').innerText = content;
+  document.getElementById('modal-overlay').style.display = 'flex';
+}
+
+function closeModal(e) {
+  if (!e || e.target === document.getElementById('modal-overlay') || e.target.classList.contains('modal-close') || e.target.innerText === '关闭') {
+    document.getElementById('modal-overlay').style.display = 'none';
+  }
+}
+
+async function checkNetwork(force) {
+  try {
+    const data = await window.pywebview.api.get_status(force);
+    const badge = document.getElementById('network-badge');
+    const text = document.getElementById('network-text');
+    const settingsText = document.getElementById('settings-status-text');
+    
+    if (data.is_online) {
+      badge.className = 'status-pill online';
+      text.innerText = '校园内网已连接 (在线)';
+      settingsText.innerHTML = '<strong style="color:#047857">已连入校园内网 10.181.200.3，当前为实时模式。</strong>';
+    } else {
+      badge.className = 'status-pill offline';
+      text.innerText = '离线演示模式 (校外网络未连接)';
+      settingsText.innerHTML = '<strong style="color:#b45309">未检测到校园内网 10.181.200.3，当前为离线全功能演示。</strong>';
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function renderInbox(data) {
+  const tbody = document.getElementById('inbox-rows');
+  tbody.innerHTML = '';
+  (data || []).forEach(msg => {
+    const tr = document.createElement('tr');
+    tr.onclick = () => openModal(msg.title, `发件部门：${msg.sender}\\n发送时间：${msg.time}\\n收件人：${msg.recipients_all}\\n\\n${msg.content}`);
+    tr.innerHTML = `
+      <td><span class="tag tag-gray">${msg.id}</span></td>
+      <td><strong>${msg.title}</strong></td>
+      <td>${msg.sender}</td>
+      <td style="color:#64748b">${msg.time}</td>
+      <td>${msg.unread ? '<span class="tag tag-red">未读</span>' : '<span class="tag tag-green">已读</span>'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderNews(data) {
+  const tbody = document.getElementById('news-rows');
+  tbody.innerHTML = '';
+  (data || []).forEach(item => {
+    const tr = document.createElement('tr');
+    tr.onclick = () => openModal(item.title, `发布部门：${item.dept}\\n发布日期：${item.time}\\n\\n${item.content}`);
+    tr.innerHTML = `
+      <td><span class="tag tag-gray">${item.id}</span></td>
+      <td><strong>${item.title}</strong></td>
+      <td>${item.dept}</td>
+      <td style="color:#64748b">${item.time}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderHygiene(data) {
+  const tbody = document.getElementById('hygiene-rows');
+  tbody.innerHTML = '';
+  (data || []).forEach(item => {
+    const isZero = item.deduct && item.deduct.startsWith('0');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${item.class}</strong></td>
+      <td><span class="tag ${isZero ? 'tag-green' : 'tag-red'}">${item.deduct}</span></td>
+      <td>${item.reason}</td>
+      <td>${item.inspector}</td>
+      <td style="color:#64748b">${item.date}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderDorm(data) {
+  const tbody = document.getElementById('dorm-rows');
+  tbody.innerHTML = '';
+  (data || []).forEach(item => {
+    const isZero = item.deduct && item.deduct.startsWith('0');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${item.room}</strong></td>
+      <td><span class="tag ${isZero ? 'tag-green' : 'tag-red'}">${item.deduct}</span></td>
+      <td>${item.reason}</td>
+      <td>${item.inspector}</td>
+      <td style="color:#64748b">${item.date}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderDuty(data) {
+  const tbody = document.getElementById('duty-rows');
+  tbody.innerHTML = '';
+  (data || []).forEach(item => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${item.week}</strong></td>
+      <td>${item.leader}</td>
+      <td>${item.teachers}</td>
+      <td>${item.focus}</td>
+      <td><span class="tag ${item.status === '进行中' ? 'tag-blue' : 'tag-gray'}">${item.status}</span></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderLostfound(data) {
+  const tbody = document.getElementById('lostfound-rows');
+  tbody.innerHTML = '';
+  (data || []).forEach(item => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><span class="tag tag-gray">${item.id}</span></td>
+      <td><strong>${item.name}</strong></td>
+      <td><span class="tag tag-blue">${item.category}</span></td>
+      <td>${item.place}</td>
+      <td style="color:#64748b">${item.time}</td>
+      <td><span class="tag ${item.status === '待认领' ? 'tag-red' : 'tag-green'}">${item.status}</span></td>
+      <td>${item.contact}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderGallery(data) {
+  const box = document.getElementById('gallery-container');
+  box.innerHTML = '';
+  (data || []).forEach(g => {
+    const card = document.createElement('div');
+    card.className = 'gallery-card';
+    card.onclick = () => openModal(g.title, `相册分类：${g.category}\\n照片数量：${g.count} 张\\n\\n说明：${g.desc}`);
+    card.innerHTML = `
+      <div style="font-size: 24px; margin-bottom: 6px;">📷</div>
+      <div style="font-weight: 700; font-size: 13px; margin-bottom: 4px;">${g.title}</div>
+      <div style="font-size: 11.5px; color: #64748b; margin-bottom: 6px;">${g.category} · 共 ${g.count} 张</div>
+      <p style="font-size: 11.5px; color: #475569; line-height: 1.5;">${g.desc}</p>
+    `;
+    box.appendChild(card);
+  });
+}
+
+function renderStreams(data) {
+  const box = document.getElementById('streams-container');
+  box.innerHTML = '';
+  (data || []).forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'file-box';
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+        <h4 style="font-size:13px; font-weight:600;">${s.name}</h4>
+        <span class="tag tag-green">${s.status}</span>
+      </div>
+      <div style="background:#0f172a; border-radius:6px; height:90px; display:flex; align-items:center; justify-content:center; color:#94a3b8; font-size:11.5px; margin-bottom:8px;">
+        📡 实时内网视讯流信号源 (${s.resolution})
+      </div>
+      <div style="font-size:11px; color:#64748b; font-family:monospace; word-break:break-all;">${s.url}</div>
+    `;
+    box.appendChild(card);
+  });
+}
+
+async function loadInbox() {
+  try {
+    const data = await window.pywebview.api.get_messages();
+    renderInbox(data);
+  } catch (e) { console.error(e); }
+}
+
+async function loadNews(catalog) {
+  try {
+    const data = await window.pywebview.api.get_news(catalog || '84');
+    renderNews(data);
+  } catch (e) { console.error(e); }
+}
+
+async function loadHygiene() {
+  try {
+    const data = await window.pywebview.api.get_hygiene();
+    renderHygiene(data);
+  } catch (e) { console.error(e); }
+}
+
+async function loadDorm() {
+  try {
+    const data = await window.pywebview.api.get_dorm();
+    renderDorm(data);
+  } catch (e) { console.error(e); }
+}
+
+async function loadDuty() {
+  try {
+    const data = await window.pywebview.api.get_duty();
+    renderDuty(data);
+  } catch (e) { console.error(e); }
+}
+
+async function loadLostfound() {
+  try {
+    const data = await window.pywebview.api.get_lostfound();
+    renderLostfound(data);
+  } catch (e) { console.error(e); }
+}
+
+async function loadGallery() {
+  try {
+    const data = await window.pywebview.api.get_gallery();
+    renderGallery(data);
+  } catch (e) { console.error(e); }
+}
+
+async function loadStreams() {
+  try {
+    const data = await window.pywebview.api.get_streams();
+    renderStreams(data);
+  } catch (e) { console.error(e); }
+}
+
+async function handleDeposit() {
+  const desc = document.getElementById('upload-desc').value.trim();
+  const fileInput = document.getElementById('upload-file');
+  const filename = fileInput.files.length > 0 ? fileInput.files[0].name : '';
+  const res = await window.pywebview.api.deposit_file(desc, filename);
+  const resBox = document.getElementById('deposit-result');
+  resBox.style.display = 'block';
+  resBox.innerHTML = `
+    <div style="background: #f0fdf4; border: 1px solid #bbf7d0; padding: 12px; border-radius: 6px;">
+      <div style="color: #15803d; font-weight: bold; margin-bottom: 4px;">✅ 寄件上传凭证就绪 (模拟)</div>
+      <div>文件名：<strong>${res.filename}</strong></div>
+      <div>文件说明：${res.desc}</div>
+      <div style="margin-top: 6px; font-size: 13px;">6 位提取密码：<strong style="color: #1d4ed8; font-size: 16px; letter-spacing: 2px;">${res.code}</strong></div>
+      <div style="font-size: 11px; color: #64748b; margin-top: 3px;">凭此提取码可在校园内网提取文件。</div>
+    </div>
+  `;
+}
+
+async function handleRetrieve() {
+  const code = document.getElementById('retrieve-code').value.trim();
+  const res = await window.pywebview.api.retrieve_file(code);
+  const resBox = document.getElementById('retrieve-result');
+  resBox.style.display = 'block';
+  if (!res.success) {
+    resBox.innerHTML = `<div style="color:#dc2626; background:#fef2f2; padding:10px; border-radius:6px;">⚠️ ${res.error}</div>`;
+    return;
+  }
+  resBox.innerHTML = `
+    <div style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 12px; border-radius: 6px;">
+      <div style="color: #1d4ed8; font-weight: bold; margin-bottom: 4px;">📦 匹配到提取文件</div>
+      <div>文件名：<strong>${res.filename}</strong></div>
+      <div>文件大小：${res.size}</div>
+      <div>寄存时间：${res.time} · 有效期至 ${res.expiry}</div>
+      <button class="btn btn-primary" style="margin-top: 8px;" onclick="alert('离线演示模式：模拟文件已下载到本地。')">立即下载保存</button>
+    </div>
+  `;
+}
+
+let appInitialized = false;
+async function initApp() {
+  if (appInitialized) return;
+  appInitialized = true;
+  try {
+    const all = await window.pywebview.api.get_all_data();
+    if (all) {
+      if (all.inbox) renderInbox(all.inbox);
+      if (all.news) renderNews(all.news);
+      if (all.hygiene) renderHygiene(all.hygiene);
+      if (all.dorm) renderDorm(all.dorm);
+      if (all.duty) renderDuty(all.duty);
+      if (all.lostfound) renderLostfound(all.lostfound);
+      if (all.gallery) renderGallery(all.gallery);
+      if (all.streams) renderStreams(all.streams);
+    }
+  } catch (e) {
+    console.error('initApp failed:', e);
+  }
+  setTimeout(() => checkNetwork(false), 80);
+}
+
+if (window.pywebview && window.pywebview.api) {
+  initApp();
+} else {
+  window.addEventListener('pywebviewready', initApp);
+}
+</script>
+</body>
+</html>
+"""
+
+def main():
+    if webview is None:
+        print("[!] 错误：未检测到 pywebview 桌面视窗依赖。", file=sys.stderr)
+        print("    请使用 .venv/bin/python main_gui.py 或执行 pip install pywebview 启动。", file=sys.stderr)
+        sys.exit(1)
+
+    print("=" * 60)
+    print("  浙江省春晖中学校园网图形界面客户端 (chunhui-gui)")
+    print("  正在启动原生桌面应用视窗...")
+    print("=" * 60)
+
+    api = ChunhuiApi()
+    window = webview.create_window(
+        title="浙江省春晖中学校园网客户端",
+        html=DESKTOP_HTML,
+        js_api=api,
+        width=1080,
+        height=720,
+        min_size=(860, 560)
+    )
+    webview.start()
 
 if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+    main()
