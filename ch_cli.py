@@ -135,7 +135,7 @@ def get_visual_width(s):
     width = 0
     clean_s = strip_ansi(s)
     for char in clean_s:
-        if unicodedata.east_asian_width(char) in ('W', 'F', 'A'):
+        if unicodedata.east_asian_width(char) in ('W', 'F'):
             width += 2
         else:
             width += 1
@@ -421,7 +421,7 @@ class HTMLToMarkdown(HTMLParser):
         clean_s = s.replace("**", "").replace("*", "")
         width = 0
         for char in clean_s:
-            if unicodedata.east_asian_width(char) in ('W', 'F', 'A'):
+            if unicodedata.east_asian_width(char) in ('W', 'F'):
                 width += 2
             else:
                 width += 1
@@ -607,7 +607,7 @@ def draw_table(headers, col_widths, rows):
                 truncated = ""
                 curr_w = 0
                 for char in item_str:
-                    char_w = 2 if unicodedata.east_asian_width(char) in ('W', 'F', 'A') else 1
+                    char_w = 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
                     if curr_w + char_w > max_w - 3:
                         break
                     truncated += char
@@ -655,7 +655,7 @@ def draw_schedule_table(data_obj):
                 truncated = ""
                 curr_w = 0
                 for char in item_str:
-                    char_w = 2 if unicodedata.east_asian_width(char) in ('W', 'F', 'A') else 1
+                    char_w = 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
                     if curr_w + char_w > max_w - 3:
                         break
                     truncated += char
@@ -1697,56 +1697,86 @@ def get_key_win():
         if ch2 == b'P': return 'down'
         if ch2 == b'K': return 'left'
         if ch2 == b'M': return 'right'
-    if ch == b'\r':
+        if ch2 == b'I': return 'pageup'
+        if ch2 == b'Q': return 'pagedown'
+    if ch in (b'\r', b'\n'):
         return 'enter'
+    if ch == b' ':
+        return 'space'
     if ch == b'\x1b':
         return 'esc'
     try:
-        return ch.decode('utf-8')
-    except:
+        return ch.decode('utf-8', errors='ignore')
+    except Exception:
         return ''
 
 def get_key_unix():
     import tty
     import termios
+    import select
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
-        ch = os.read(fd, 8)
-        if ch in (b'\x1b[A', b'\x1bOA'):
-            return 'up'
-        elif ch in (b'\x1b[B', b'\x1bOB'):
-            return 'down'
-        elif ch in (b'\x1b[C', b'\x1bOC'):
-            return 'right'
-        elif ch in (b'\x1b[D', b'\x1bOD'):
-            return 'left'
-        elif ch == b'\x1b':
-            return 'esc'
-        elif ch in (b'\r', b'\n'):
+        tty.setcbreak(fd)
+        ch1 = os.read(fd, 1)
+        if ch1 == b'\x1b':
+            r, _, _ = select.select([fd], [], [], 0.05)
+            if r:
+                seq = os.read(fd, 16)
+                if seq in (b'[A', b'OA') or seq.endswith(b'A'):
+                    return 'up'
+                elif seq in (b'[B', b'OB') or seq.endswith(b'B'):
+                    return 'down'
+                elif seq in (b'[C', b'OC') or seq.endswith(b'C'):
+                    return 'right'
+                elif seq in (b'[D', b'OD') or seq.endswith(b'D'):
+                    return 'left'
+                elif seq == b'[5~':
+                    return 'pageup'
+                elif seq == b'[6~':
+                    return 'pagedown'
+                return 'esc'
+            else:
+                return 'esc'
+        elif ch1 in (b'\r', b'\n'):
             return 'enter'
+        elif ch1 == b' ':
+            return 'space'
         try:
-            return ch.decode('utf-8')
-        except:
+            return ch1.decode('utf-8', errors='ignore')
+        except Exception:
             return ''
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 def getkey():
+    if not sys.stdin.isatty():
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                return 'esc'
+            val = line.strip()
+            if val == '': return 'enter'
+            return val
+        except Exception:
+            return 'esc'
+
     if os.name == 'nt':
         try:
             return get_key_win()
-        except:
+        except Exception:
             pass
     else:
         try:
             return get_key_unix()
-        except:
+        except Exception:
             pass
-    val = input().strip()
-    if val == '': return 'enter'
-    return val
+    try:
+        val = input().strip()
+        if val == '': return 'enter'
+        return val
+    except (EOFError, KeyboardInterrupt):
+        return 'esc'
 
 def handle_tui_action(choice):
     print("\n" + "="*40)
@@ -1893,6 +1923,13 @@ def handle_tui_action(choice):
     getkey()
 
 def run_tui():
+    if not sys.stdin.isatty():
+        print(f"{C_YELLOW}未检测到交互式终端环境，显示命令帮助：{C_RESET}")
+        main_file = os.path.basename(sys.argv[0])
+        cmd = f"python3 {main_file} --help" if main_file.endswith('.py') else f"{main_file} --help"
+        os.system(cmd)
+        return
+
     main_file = os.path.basename(sys.argv[0])
     if main_file.endswith('.py'):
         cmd_prefix = f"python3 {main_file}"
@@ -1900,45 +1937,100 @@ def run_tui():
         cmd_prefix = main_file
 
     options = [
-        ("登录系统 (Import Cookie)", f"{cmd_prefix} login"),
-        ("查询登录状态 (Check Status)", f"{cmd_prefix} status"),
-        ("班级课表查询 (Class Schedule)", f"{cmd_prefix} schedule"),
-        ("收件箱消息 (Inbox Messages)", f"{cmd_prefix} messages"),
-        ("纪律卫生考评 (Hygiene Appraisals)", f"{cmd_prefix} hygiene"),
-        ("教师值周安排 (Teacher Duty)", f"{cmd_prefix} duty"),
-        ("校内文章资讯 (Campus News)", f"{cmd_prefix} news"),
-        ("寝室查询与扣分 (Dormitory Info)", f"{cmd_prefix} bedroom"),
-        ("校园失物招领 (Lost & Found)", f"{cmd_prefix} lostfound"),
-        ("文件寄存与提取 (File Station)", f"{cmd_prefix} file"),
-        ("退出程序 (Exit)", "")
+        ("登录系统 (Import Cookie)", f"{cmd_prefix} login", "导入浏览器获取的会话 Cookie，完成身份认证与凭据存储"),
+        ("查询登录状态 (Check Status)", f"{cmd_prefix} status", "检测当前会话有效性，查看在线状态与用户基础信息"),
+        ("班级课表查询 (Class Schedule)", f"{cmd_prefix} schedule", "查询高一至高三年级各班级完整课程表与任课教师团队"),
+        ("收件箱消息 (Inbox Messages)", f"{cmd_prefix} messages", "浏览校内收件箱通知、查看详情并按需下载全部附件"),
+        ("纪律卫生考评 (Hygiene Appraisals)", f"{cmd_prefix} hygiene", "查询班级常规评比、卫生检查扣分明细与多媒体证据"),
+        ("教师值周安排 (Teacher Duty)", f"{cmd_prefix} duty", "查看本周或整学期教师值周表，支持按教师或班级模糊检索"),
+        ("校内文章资讯 (Campus News)", f"{cmd_prefix} news", "浏览通知公告、新闻聚焦、校内公示与值周小结"),
+        ("寝室查询与扣分 (Dormitory Info)", f"{cmd_prefix} bedroom", "查询班级宿舍分配分布与各楼宇宿舍日常考评扣分"),
+        ("校园失物招领 (Lost & Found)", f"{cmd_prefix} lostfound", "浏览失物招领信息、查看详情并支持附件图片下载"),
+        ("文件寄存与提取 (File Station)", f"{cmd_prefix} file", "校内文件传输，支持本地文件上传寄存与提取码下载"),
+        ("退出程序 (Exit Console)", "", "安全退出春晖中学校园网控制台")
     ]
-    
+
+    inner_w = 74
+
+    def render_box_line(left, fill, right):
+        return f"{C_BLUE}{left}{fill * inner_w}{right}{C_RESET}"
+
+    def render_row(content, align="left"):
+        return f"{C_BLUE}│{C_RESET} {pad_text(content, inner_w - 2, align)} {C_BLUE}│{C_RESET}"
+
+    banner = [
+        r"  ____ _                  _           _        ____ _     ___ ",
+        r" / ___| |__  _   _ _ __  | |__  _   _(_)      / ___| |   |_ _|",
+        r"| |   | '_ \| | | | '_ \ | '_ \| | | | |_____| |   | |    | | ",
+        r"| |___| | | | |_| | | | || | | | |_| | |_____| |___| |___ | | ",
+        r" \____|_| |_|\__,_|_| |_||_| |_|\__,_|_|      \____|_____|___|"
+    ]
+
     selected_idx = 0
-    while True:
-        # 清屏
-        os.system('cls' if os.name == 'nt' else 'clear')
-        print(f"{C_BOLD}{C_CYAN}=== 春晖中学校园网 CLI/TUI 工具 ==={C_RESET}")
-        print("使用 [↑/↓] 键移动光标，[Enter] 键确认选择\n")
-        
-        for idx, (option, cmd) in enumerate(options):
-            cmd_desc = f" [{cmd}]" if cmd else ""
-            if idx == selected_idx:
-                print(f"{C_GREEN}{C_BOLD}  > {option:<36}{C_GREY}{cmd_desc}{C_RESET}")
-            else:
-                print(f"    {option:<36}{C_GREY}{cmd_desc}{C_RESET}")
-                
-        key = getkey()
-        if key in ('up', '\x1b[A', '\x1bOA'):
-            selected_idx = (selected_idx - 1) % len(options)
-        elif key in ('down', '\x1b[B', '\x1bOB'):
-            selected_idx = (selected_idx + 1) % len(options)
-        elif key in ('enter', '\r', '\n'):
-            if selected_idx == len(options) - 1:
-                break
-            else:
+    try:
+        while True:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            session = load_session()
+            has_session = bool(session.get("sessionid"))
+            session_status = f"{C_GREEN}● 已配置 (Session Ready){C_RESET}" if has_session else f"{C_YELLOW}○ 未配置 (No Session){C_RESET}"
+
+            print(render_box_line("┌", "─", "┐"))
+            for b in banner:
+                print(render_row(f"{C_CYAN}{C_BOLD}{b}{C_RESET}", "center"))
+            print(render_row(""))
+            print(render_row(f"{C_YELLOW}{C_BOLD}浙江省春晖中学校园网控制台 · CHUNHUI HIGH SCHOOL{C_RESET}", "center"))
+            print(render_box_line("├", "─", "┤"))
+            print(render_row(f"{C_BOLD}[系统节点]{C_RESET} 10.181.200.3    {C_BOLD}[会话状态]{C_RESET} {session_status}"))
+            print(render_box_line("├", "─", "┤"))
+
+            for idx, (title, cmd, _) in enumerate(options):
+                num_tag = f"[{idx+1:02d}]"
+                if idx == selected_idx:
+                    left_part = f"{C_GREEN}{C_BOLD}▶ {num_tag} {title}{C_RESET}"
+                    right_part = f"{C_GREEN}{C_BOLD}{cmd}{C_RESET}" if cmd else ""
+                else:
+                    left_part = f"  {C_GREY}{num_tag}{C_RESET} {title}"
+                    right_part = f"{C_GREY}{cmd}{C_RESET}" if cmd else ""
+
+                left_padded = pad_text(left_part, 48, align="left")
+                right_padded = pad_text(right_part, 20, align="right")
+                print(render_row(f"{left_padded} {right_padded}"))
+
+            print(render_box_line("├", "─", "┤"))
+            cur_title, _, cur_desc = options[selected_idx]
+            print(render_row(f"{C_YELLOW}{C_BOLD}[当前功能]{C_RESET} {C_BOLD}{cur_title}{C_RESET}"))
+            print(render_row(f"{C_GREY}详细说明: {cur_desc}{C_RESET}"))
+            print(render_box_line("├", "─", "┤"))
+            print(render_row(f"{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [↑/k/w] 上移  [↓/j/s] 下移  [1-9/0] 直达  [Enter] 确认  [q] 退出", "center"))
+            print(render_box_line("└", "─", "┘"))
+
+            key = getkey()
+            if key in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+                selected_idx = (selected_idx - 1) % len(options)
+            elif key in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+                selected_idx = (selected_idx + 1) % len(options)
+            elif key in ('pageup',):
+                selected_idx = (selected_idx - 5) % len(options)
+            elif key in ('pagedown',):
+                selected_idx = (selected_idx + 5) % len(options)
+            elif key in ('enter', 'space', '\r', '\n'):
+                if selected_idx == len(options) - 1:
+                    break
+                else:
+                    handle_tui_action(selected_idx)
+            elif key in ('1', '2', '3', '4', '5', '6', '7', '8', '9'):
+                target = int(key) - 1
+                if 0 <= target < len(options) - 1:
+                    selected_idx = target
+                    handle_tui_action(selected_idx)
+            elif key == '0':
+                selected_idx = 9
                 handle_tui_action(selected_idx)
-        elif key == 'q' or key == 'esc':
-            break
+            elif key in ('q', 'esc'):
+                break
+    except KeyboardInterrupt:
+        pass
+    print("\n已退出控制台。")
 
 def main():
     if len(sys.argv) == 1:
