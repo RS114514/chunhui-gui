@@ -11,6 +11,8 @@ import uuid
 import time
 import argparse
 import unicodedata
+import base64
+import socket
 from html.parser import HTMLParser
 
 BASE_URL = "http://10.181.200.3"
@@ -39,6 +41,20 @@ def log_warn(msg):
 def log_error(msg):
     print(f"{C_RED}{C_BOLD}[x] {msg}{C_RESET}")
 
+def check_intranet_connection(timeout=1.5):
+    """
+    通过 HTTP HEAD 请求检测校园内网主站的真实连通性
+    """
+    try:
+        req = urllib.request.Request(f"{BASE_URL}/account/login4Stu/", method="HEAD")
+        req.add_header("User-Agent", "Mozilla/5.0")
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
 def load_session():
     if os.path.exists(SESSION_FILE):
         try:
@@ -61,6 +77,56 @@ def save_session(session):
         log_error(f"保存会话文件失败: {e}")
         return False
 
+def clear_session():
+    """
+    清除本地持久化的会话认证信息
+    """
+    try:
+        if os.path.exists(SESSION_FILE):
+            os.remove(SESSION_FILE)
+        return True
+    except Exception as e:
+        log_error(f"清除会话文件失败: {e}")
+        return False
+
+def extract_cookies_from_headers(headers_obj):
+    """
+    从 HTTP 响应头中提取 Set-Cookie 键值对字典
+    """
+    cookies = {}
+    if not headers_obj:
+        return cookies
+    raw_list = []
+    if hasattr(headers_obj, "get_all"):
+        raw_list = headers_obj.get_all("Set-Cookie") or headers_obj.get_all("set-cookie") or []
+    elif hasattr(headers_obj, "getlist"):
+        raw_list = headers_obj.getlist("Set-Cookie") or []
+    elif isinstance(headers_obj, dict):
+        val = headers_obj.get("Set-Cookie") or headers_obj.get("set-cookie")
+        if isinstance(val, list):
+            raw_list = val
+        elif val:
+            raw_list = [val]
+    for item in raw_list:
+        parts = item.split(";")[0].strip()
+        if "=" in parts:
+            k, v = parts.split("=", 1)
+            cookies[k.strip()] = v.strip()
+    return cookies
+
+def parse_cookie_str(cookie_str):
+    """
+    将标准 Cookie 字符串解析为字典
+    """
+    cookies = {}
+    if not cookie_str:
+        return cookies
+    for part in cookie_str.split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            cookies[k.strip()] = v.strip()
+    return cookies
+
 def make_request(url_path, method="GET", data=None, headers=None, follow_redirects=False):
     url = f"{BASE_URL}{url_path}" if url_path.startswith("/") else url_path
     try:
@@ -80,15 +146,24 @@ def make_request(url_path, method="GET", data=None, headers=None, follow_redirec
     if headers is None:
         headers = {}
     
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    if "User-Agent" not in headers:
+        headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     
-    cookies = load_session()
-    cookie_items = [f"{k}={v}" for k, v in cookies.items() if v]
-    if cookie_items:
-        headers["Cookie"] = "; ".join(cookie_items)
+    session_cookies = load_session()
+    if "Cookie" not in headers:
+        cookie_items = [f"{k}={v}" for k, v in session_cookies.items() if v]
+        if cookie_items:
+            headers["Cookie"] = "; ".join(cookie_items)
         
-    if method == "POST" and "csrftoken" in cookies:
-        headers["X-CSRFToken"] = cookies["csrftoken"]
+    if method == "POST" and "X-CSRFToken" not in headers:
+        token = session_cookies.get("csrftoken")
+        if not token and "Cookie" in headers:
+            parsed_c = parse_cookie_str(headers["Cookie"])
+            token = parsed_c.get("csrftoken")
+        if token:
+            headers["X-CSRFToken"] = token
+            
+    if method == "POST" and "Referer" not in headers:
         headers["Referer"] = f"{BASE_URL}/"
         
     req_data = None
@@ -107,22 +182,22 @@ def make_request(url_path, method="GET", data=None, headers=None, follow_redirec
     else:
         opener = urllib.request.build_opener(NoRedirectHandler)
         
-    max_retries = 3
+    max_retries = 2
     for attempt in range(max_retries):
         req = urllib.request.Request(url, data=req_data, method=method)
         for k, v in headers.items():
             req.add_header(k, v)
         try:
-            with opener.open(req, timeout=10) as resp:
+            with opener.open(req, timeout=5) as resp:
                 return resp.status, resp.read(), resp.info()
         except urllib.error.HTTPError as e:
             if e.code in (502, 504) and attempt < max_retries - 1:
-                time.sleep(1.0)
+                time.sleep(0.5)
                 continue
             return e.code, e.read(), e.headers
         except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(1.0)
+            if attempt < max_retries - 1 and "timeout" not in str(e).lower():
+                time.sleep(0.5)
                 continue
             return 0, str(e).encode("utf-8"), {}
 
@@ -1633,18 +1708,123 @@ def cmd_lostfound(args):
 
 
 
-def cmd_login(args):
-    cookie_str = args.cookie
-    if not cookie_str:
-        print(f"{C_BOLD}请输入您从浏览器获取的 Cookie 字符串：{C_RESET}")
-        print(f"{C_GREY}(通常可在浏览器开发者工具的 Network 面板请求头中找到。形如: sessionid=xxx; csrftoken=yyy){C_RESET}")
-        cookie_str = input(f"{C_CYAN}Cookie > {C_RESET}").strip()
+def get_captcha():
+    """
+    获取登录验证码图片（Base64）及初始 Session Cookies。
+    步骤 1: GET /account/login4Stu/ 获取初始 sessionid / csrftoken
+    步骤 2: GET /account/create_code_img2/?t=... 获取验证码图片
+    """
+    init_cookies = {}
+    try:
+        status, _, resp_headers = make_request("/account/login4Stu/", method="GET", follow_redirects=False)
+        if resp_headers:
+            init_cookies.update(extract_cookies_from_headers(resp_headers))
+            
+        cookie_str = "; ".join(f"{k}={v}" for k, v in init_cookies.items())
+        headers = {"Cookie": cookie_str} if cookie_str else {}
+        ts = int(time.time() * 1000)
+        status, img_body, img_headers = make_request(f"/account/create_code_img2/?t={ts}", method="GET", headers=headers)
+        if img_headers:
+            init_cookies.update(extract_cookies_from_headers(img_headers))
+            
+        if status == 200 and img_body:
+            b64 = base64.b64encode(img_body).decode("ascii")
+            return {
+                "success": True,
+                "image": f"data:image/png;base64,{b64}",
+                "cookies": init_cookies
+            }
+        else:
+            err_msg = f"获取验证码失败 (HTTP {status})" if status != 0 else "无法连接到校园内网 (10.181.200.3)"
+            return {
+                "success": False,
+                "error": err_msg,
+                "cookies": init_cookies
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"网络异常: {e}",
+            "cookies": init_cookies
+        }
+
+def login_with_credentials(username, password, check_code, initial_cookies=None):
+    """
+    通过账号、密码、验证码进行登录
+    """
+    cookies = dict(initial_cookies) if initial_cookies else load_session()
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
+    
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": f"{BASE_URL}/account/login4Stu/",
+        "Origin": BASE_URL,
+    }
+    if cookie_str:
+        headers["Cookie"] = cookie_str
+    if "csrftoken" in cookies:
+        headers["X-CSRFToken"] = cookies["csrftoken"]
         
+    post_data = {
+        "username": username,
+        "password": password,
+        "checkCode": check_code
+    }
+    
+    try:
+        status, body, resp_headers = make_request(
+            "/account/login4Stu/",
+            method="POST",
+            data=post_data,
+            headers=headers,
+            follow_redirects=False
+        )
+        
+        if resp_headers:
+            new_cookies = extract_cookies_from_headers(resp_headers)
+            cookies.update(new_cookies)
+            
+        body_str = body.decode("utf-8", errors="ignore") if isinstance(body, bytes) else str(body)
+        redirect_url = ""
+        if resp_headers:
+            redirect_url = resp_headers.get("Location", "")
+            
+        is_success = (status == 302 and ("/home/" in redirect_url or "/home/index/" in redirect_url))
+        has_error = any(kw in body_str for kw in ("验证码", "密码", "错误", "失败", "id_username"))
+        
+        if is_success and not has_error:
+            save_session(cookies)
+            return {
+                "success": True,
+                "message": "登录成功",
+                "cookies": cookies
+            }
+        else:
+            err_msg = "登录失败，请检查账号、密码或验证码"
+            match = re.search(r'(验证码[^<"\'\n\r]{0,20}|用户名[^<"\'\n\r]{0,20}|密码[^<"\'\n\r]{0,20}|错误[^<"\'\n\r]{0,20}|失败[^<"\'\n\r]{0,20})', body_str)
+            if match:
+                err_msg = match.group(1).strip()
+            elif status == 0:
+                err_msg = "连接校园内网失败 (10.181.200.3)，请检查局域网连接"
+            return {
+                "success": False,
+                "error": err_msg,
+                "need_refresh_captcha": True
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"登录异常: {e}",
+            "need_refresh_captcha": True
+        }
+
+def login_with_cookie(cookie_str):
+    """
+    通过输入的 Cookie 字符串进行登录认证并验证
+    """
     sessionid = ""
     csrftoken = ""
-    
-    parts = [p.strip() for p in cookie_str.split(";")]
-    for part in parts:
+    for part in cookie_str.split(";"):
         if "=" in part:
             k, v = part.split("=", 1)
             k = k.strip()
@@ -1655,30 +1835,126 @@ def cmd_login(args):
                 csrftoken = v
                 
     if not sessionid:
-        log_warn("输入的 Cookie 中未检测到 sessionid，这可能会导致需要登录的功能无法使用。")
-    if not csrftoken:
-        log_warn("输入的 Cookie 中未检测到 csrftoken，这可能会导致文件上传等写操作失败。")
+        return {"success": False, "error": "Cookie 中未找到 sessionid 字段"}
         
     session_data = {
         "sessionid": sessionid,
         "csrftoken": csrftoken
     }
-    
-    if save_session(session_data):
-        log_success("Cookie 导入成功！")
-        check_login_status()
+    if not save_session(session_data):
+        return {"success": False, "error": "保存会话文件失败"}
+        
+    ok = check_login_status(verbose=False)
+    if ok:
+        return {"success": True, "message": "Cookie 导入成功且会话验证有效"}
+    else:
+        return {"success": True, "message": "Cookie 已保存至本地（当前网络无法直连内网验证或会话已失效）"}
 
-def check_login_status():
-    log_info("正在向服务器验证登录状态...")
+def check_login_status(verbose=True):
+    if verbose:
+        log_info("正在向服务器验证登录状态...")
     status, body, headers = make_request("/article/article-detail/37079/", method="GET")
     if status == 200:
-        log_success("已成功登录！")
+        if verbose:
+            log_success("已成功登录！")
         return True
     elif status == 302:
-        log_error("会话验证失败: 账号未登录或 Session 已失效。请重新获取 Cookie。")
+        if verbose:
+            log_error("会话验证失败: 账号未登录或 Session 已失效。请重新获取 Cookie。")
+        return False
     else:
-        log_error(f"连接服务器失败 (HTTP Code: {status})。请检查局域网连接或服务器状态。")
-    return False
+        if verbose:
+            log_error(f"连接服务器失败 (HTTP Code: {status})。请检查局域网连接或服务器状态。")
+        return False
+
+def cmd_logout(args=None):
+    clear_session()
+    log_success("已退出登录，本地会话已清除。")
+
+def cmd_login(args):
+    cookie_str = getattr(args, "cookie", None)
+    username = getattr(args, "username", None)
+    password = getattr(args, "password", None)
+    code = getattr(args, "code", None)
+    
+    if cookie_str:
+        res = login_with_cookie(cookie_str)
+        if res["success"]:
+            log_success(res["message"])
+        else:
+            log_error(res["error"])
+        return
+        
+    if username and password and code:
+        log_info(f"正在提交登录: {username} ...")
+        res = login_with_credentials(username, password, code)
+        if res["success"]:
+            log_success("登录成功！")
+        else:
+            log_error(f"登录失败: {res.get('error')}")
+        return
+
+    print(f"\n{C_BOLD}=== 春晖校园网登录 ==={C_RESET}")
+    print("  1. 账号密码登录 (需验证码)")
+    print("  2. 导入浏览器 Cookie 字符串")
+    try:
+        choice = input(f"{C_CYAN}请选择登录方式 (1-2, 默认 1) > {C_RESET}").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+        
+    if choice == "2":
+        print(f"{C_BOLD}请输入您从浏览器获取的 Cookie 字符串：{C_RESET}")
+        print(f"{C_GREY}(通常可在浏览器开发者工具的 Network 面板请求头中找到。形如: sessionid=xxx; csrftoken=yyy){C_RESET}")
+        try:
+            c_str = input(f"{C_CYAN}Cookie > {C_RESET}").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        res = login_with_cookie(c_str)
+        if res["success"]:
+            log_success(res["message"])
+        else:
+            log_error(res["error"])
+    else:
+        log_info("正在连接校园内网获取验证码...")
+        cap = get_captcha()
+        if not cap["success"]:
+            log_error(f"获取验证码失败: {cap.get('error')}")
+            return
+            
+        import tempfile
+        cap_file = os.path.join(tempfile.gettempdir(), "chunhui_captcha.png")
+        try:
+            img_data = base64.b64decode(cap["image"].split(",", 1)[1])
+            with open(cap_file, "wb") as f:
+                f.write(img_data)
+            log_info(f"验证码图片已保存至: {cap_file}")
+            if sys.platform == "darwin":
+                os.system(f"open {cap_file}")
+            elif sys.platform.startswith("win"):
+                os.system(f"start {cap_file}")
+            elif sys.platform.startswith("linux"):
+                os.system(f"xdg-open {cap_file} 2>/dev/null &")
+        except Exception as e:
+            log_warn(f"无法自动打开图片查看器: {e}")
+            
+        try:
+            u_val = input(f"{C_CYAN}学号/用户名 > {C_RESET}").strip()
+            import getpass
+            p_val = getpass.getpass(f"{C_CYAN}密码 > {C_RESET}").strip()
+            c_val = input(f"{C_CYAN}验证码 (见已打开的图片) > {C_RESET}").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+            
+        log_info("正在提交登录认证...")
+        res = login_with_credentials(u_val, p_val, c_val, cap.get("cookies"))
+        if res["success"]:
+            log_success("登录成功！会话已写入本地凭据文件。")
+            check_login_status()
+        else:
+            log_error(f"登录失败: {res.get('error')}")
 
 def cmd_status(args):
     check_login_status()
@@ -2047,8 +2323,14 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="子命令")
 
     # login command
-    parser_login = subparsers.add_parser("login", help="通过 Cookie 进行登录")
+    parser_login = subparsers.add_parser("login", help="校园网账号密码或 Cookie 登录")
     parser_login.add_argument("--cookie", type=str, help="直接指定 Cookie 字符串")
+    parser_login.add_argument("-u", "--username", type=str, help="登录用户名/学号")
+    parser_login.add_argument("-p", "--password", type=str, help="登录密码")
+    parser_login.add_argument("-c", "--code", type=str, help="验证码")
+
+    # logout command
+    subparsers.add_parser("logout", help="退出当前登录并清除本地会话")
 
     # status command
     subparsers.add_parser("status", help="检查当前登录状态")
@@ -2135,6 +2417,8 @@ def main():
 
     if args.command == "login":
         cmd_login(args)
+    elif args.command == "logout":
+        cmd_logout(args)
     elif args.command == "status":
         cmd_status(args)
     elif args.command == "schedule":
