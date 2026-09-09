@@ -110,6 +110,25 @@ class ChunhuiApi:
         res = ch_cli.login_with_credentials(username, password, code, self._cached_captcha_cookies)
         return res
 
+    def auto_detect_cookie(self):
+        """自动从本机主流浏览器 (Safari, Chrome, Firefox, Edge) 检索校园网 Cookie"""
+        try:
+            res = ch_cli.auto_get_browser_cookie()
+            if res and res.get("sessionid"):
+                return {
+                    "success": True,
+                    "browser": res.get("browser", "浏览器"),
+                    "sessionid": res.get("sessionid"),
+                    "csrftoken": res.get("csrftoken", ""),
+                    "cookie_str": f"sessionid={res.get('sessionid')}; csrftoken={res.get('csrftoken', '')}"
+                }
+            return {
+                "success": False,
+                "error": "未在本地浏览器中找到春晖校园网已登录的 Cookie 会话。请先在浏览器中登录校园网 (http://10.181.200.3/account/login4Stu/) 后重试。"
+            }
+        except Exception as e:
+            return {"success": False, "error": f"提取浏览器 Cookie 出错: {str(e)}"}
+
     def login_cookie(self, cookie_str):
         """通过直接粘贴 Cookie 导入会话"""
         cookie_str = (cookie_str or "").strip()
@@ -1475,12 +1494,21 @@ table.data-table tr:hover td {
 
       <!-- Cookie 导入表单 -->
       <div id="auth-tab-cookie" style="display:none;">
+        <div style="margin-bottom:12px; padding:10px; border-radius:6px; background:var(--bg-card); border:1px dashed var(--border-color); text-align:center;">
+          <div style="font-size:12px; font-weight:bold; margin-bottom:4px; color:var(--text-main);">✨ 快捷方式：自动读取浏览器 Cookie</div>
+          <p style="font-size:11px; color:var(--text-muted); margin-bottom:8px; line-height:1.4;">
+            支持直接扫描 Safari、Chrome、Edge、Firefox 中已登录的春晖会话
+          </p>
+          <button type="button" class="btn btn-outline" style="width:100%; font-size:12px; padding:6px 10px;" onclick="autoFetchBrowserCookie()">
+            🌐 一键自动检测并填充 Cookie
+          </button>
+        </div>
         <div class="form-group">
           <label>浏览器 Cookie 字符串：</label>
-          <textarea id="login-cookie-input" class="form-control" style="height: 100px; resize:none; font-family:monospace; font-size:11px;" placeholder="粘贴形如: sessionid=xxx; csrftoken=yyy"></textarea>
+          <textarea id="login-cookie-input" class="form-control" style="height: 75px; resize:none; font-family:monospace; font-size:11px;" placeholder="粘贴形如: sessionid=xxx; csrftoken=yyy"></textarea>
         </div>
         <p style="font-size:11px; color:var(--text-muted); margin-bottom:12px; line-height:1.5;">
-          提示：可在校园网内网登录后的浏览器 F12 开发者工具 Network 面板请求头中复制 Cookie。
+          提示：亦可在校园网内网登录后的浏览器 F12 开发者工具 Network 面板请求头中复制 Cookie。
         </p>
         <button class="btn btn-primary" style="width:100%;" onclick="submitCookieLogin()">导入并保存会话</button>
       </div>
@@ -1695,6 +1723,32 @@ async function submitAccountLogin() {
     msg.style.background = '#fef2f2';
     msg.style.color = '#b91c1c';
     msg.innerText = '❌ 请求异常: ' + e;
+  }
+}
+
+async function autoFetchBrowserCookie() {
+  const msg = document.getElementById('auth-msg-box');
+  msg.style.display = 'block';
+  msg.style.background = '#eff6ff';
+  msg.style.color = '#1d4ed8';
+  msg.innerText = '🔍 正在扫描本机浏览器中的春晖校园网 Cookie...';
+
+  try {
+    const res = await window.pywebview.api.auto_detect_cookie();
+    if (res && res.success && res.cookie_str) {
+      document.getElementById('login-cookie-input').value = res.cookie_str;
+      msg.style.background = '#f0fdf4';
+      msg.style.color = '#15803d';
+      msg.innerText = '✅ 已成功从 ' + (res.browser || '浏览器') + ' 提取 Cookie！点击下方“导入并保存会话”即可完成。';
+    } else {
+      msg.style.background = '#fef2f2';
+      msg.style.color = '#b91c1c';
+      msg.innerText = '⚠️ ' + (res && res.error ? res.error : '未在本地浏览器中找到校园网 Cookie');
+    }
+  } catch (e) {
+    msg.style.background = '#fef2f2';
+    msg.style.color = '#b91c1c';
+    msg.innerText = '❌ 检测异常: ' + e;
   }
 }
 

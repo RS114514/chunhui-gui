@@ -13,6 +13,12 @@ import argparse
 import unicodedata
 import base64
 import socket
+import sqlite3
+import shutil
+import tempfile
+import glob
+import struct
+import webbrowser
 from html.parser import HTMLParser
 
 BASE_URL = "http://10.181.200.3"
@@ -227,6 +233,15 @@ def pad_text(s, width, align="center"):
         return s + " " * pad_len
     else:
         return " " * pad_len + s
+
+TUI_INNER_W = 74
+
+def render_box_line(left, fill, right, inner_w=TUI_INNER_W):
+    return f"{C_BLUE}{left}{fill * inner_w}{right}{C_RESET}"
+
+def render_row(content, align="left", inner_w=TUI_INNER_W):
+    return f"{C_BLUE}│{C_RESET} {pad_text(content, inner_w - 2, align)} {C_BLUE}│{C_RESET}"
+
 
 def clean_html(text):
     if not text:
@@ -1871,7 +1886,266 @@ def cmd_logout(args=None):
     clear_session()
     log_success("已退出登录，本地会话已清除。")
 
+def extract_safari_cookies():
+    """从 macOS Safari 提取春晖校园网 Cookie"""
+    paths = [
+        os.path.expanduser('~/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies'),
+        os.path.expanduser('~/Library/Cookies/Cookies.binarycookies')
+    ]
+    for p in paths:
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, 'rb') as f:
+                magic = f.read(4)
+                if magic != b'cook':
+                    continue
+                num_pages = struct.unpack('>I', f.read(4))[0]
+                page_sizes = [struct.unpack('>I', f.read(4))[0] for _ in range(num_pages)]
+                sessionid = ''
+                csrftoken = ''
+                for size in page_sizes:
+                    page_data = f.read(size)
+                    if len(page_data) < 8:
+                        continue
+                    header, num_cookies = struct.unpack('<II', page_data[:8])
+                    offsets = [struct.unpack('<I', page_data[8 + i*4 : 12 + i*4])[0] for i in range(num_cookies)]
+                    for offset in offsets:
+                        if offset >= len(page_data):
+                            continue
+                        cookie_data = page_data[offset:]
+                        url_offset = struct.unpack('<I', cookie_data[16:20])[0]
+                        name_offset = struct.unpack('<I', cookie_data[20:24])[0]
+                        value_offset = struct.unpack('<I', cookie_data[28:32])[0]
+                        
+                        domain = cookie_data[url_offset:].split(b'\x00', 1)[0].decode('utf-8', errors='ignore')
+                        name = cookie_data[name_offset:].split(b'\x00', 1)[0].decode('utf-8', errors='ignore')
+                        value = cookie_data[value_offset:].split(b'\x00', 1)[0].decode('utf-8', errors='ignore')
+                        
+                        if '10.181.200.3' in domain or 'chunhui' in domain:
+                            if name == 'sessionid':
+                                sessionid = value
+                            elif name == 'csrftoken':
+                                csrftoken = value
+                if sessionid:
+                    return {'browser': 'Safari', 'sessionid': sessionid, 'csrftoken': csrftoken}
+        except Exception:
+            pass
+    return None
+
+def extract_firefox_cookies():
+    """从 Firefox 浏览器各 Profile 中提取春晖校园网 Cookie"""
+    patterns = [
+        os.path.expanduser('~/Library/Application Support/Firefox/Profiles/*/cookies.sqlite'),
+        os.path.expandvars(r'%APPDATA%\Mozilla\Firefox\Profiles\*\cookies.sqlite'),
+        os.path.expanduser('~/.mozilla/firefox/*/cookies.sqlite')
+    ]
+    for pattern in patterns:
+        for p in glob.glob(pattern):
+            if not os.path.exists(p):
+                continue
+            tmp_path = None
+            try:
+                tmp = tempfile.NamedTemporaryFile(delete=False)
+                tmp_path = tmp.name
+                tmp.close()
+                shutil.copy2(p, tmp_path)
+                conn = sqlite3.connect(tmp_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT name, value FROM moz_cookies WHERE host LIKE '%10.181.200.3%' OR host LIKE '%chunhui%'")
+                rows = cursor.fetchall()
+                conn.close()
+                sessionid = ''
+                csrftoken = ''
+                for name, value in rows:
+                    if name == 'sessionid':
+                        sessionid = value
+                    elif name == 'csrftoken':
+                        csrftoken = value
+                if sessionid:
+                    return {'browser': 'Firefox', 'sessionid': sessionid, 'csrftoken': csrftoken}
+            except Exception:
+                pass
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try: os.unlink(tmp_path)
+                    except Exception: pass
+    return None
+
+def decrypt_windows_chromium_cookie(cookie_db_path, encrypted_value):
+    """Windows 系统下对 Chromium 浏览器 Cookie 进行解密"""
+    if not encrypted_value or os.name != 'nt':
+        return ""
+    import ctypes
+    from ctypes import wintypes
+    
+    curr = os.path.dirname(cookie_db_path)
+    local_state_path = None
+    for _ in range(4):
+        ls = os.path.join(curr, "Local State")
+        if os.path.exists(ls):
+            local_state_path = ls
+            break
+        curr = os.path.dirname(curr)
+        
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [('cbData', wintypes.DWORD), ('pbData', ctypes.POINTER(ctypes.c_char))]
+        
+    if not local_state_path:
+        pDataIn = DATA_BLOB(len(encrypted_value), ctypes.cast(ctypes.create_string_buffer(encrypted_value), ctypes.POINTER(ctypes.c_char)))
+        pDataOut = DATA_BLOB()
+        if ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(pDataIn), None, None, None, None, 0, ctypes.byref(pDataOut)):
+            raw = ctypes.string_at(pDataOut.pbData, pDataOut.cbData)
+            ctypes.windll.kernel32.LocalFree(pDataOut.pbData)
+            return raw.decode('utf-8', errors='ignore')
+        return ""
+        
+    try:
+        with open(local_state_path, "r", encoding="utf-8") as f:
+            local_state = json.load(f)
+        enc_key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])[5:]
+        
+        pDataIn = DATA_BLOB(len(enc_key), ctypes.cast(ctypes.create_string_buffer(enc_key), ctypes.POINTER(ctypes.c_char)))
+        pDataOut = DATA_BLOB()
+        if not ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(pDataIn), None, None, None, None, 0, ctypes.byref(pDataOut)):
+            return ""
+        master_key = ctypes.string_at(pDataOut.pbData, pDataOut.cbData)
+        ctypes.windll.kernel32.LocalFree(pDataOut.pbData)
+        
+        if encrypted_value.startswith(b'v10') or encrypted_value.startswith(b'v11'):
+            nonce = encrypted_value[3:15]
+            ciphertext = encrypted_value[15:-16]
+            tag = encrypted_value[-16:]
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                aesgcm = AESGCM(master_key)
+                decrypted = aesgcm.decrypt(nonce, ciphertext + tag, None)
+                return decrypted.decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ""
+
+def extract_chromium_cookies():
+    """从 Chromium 系列浏览器 (Chrome / Edge / Brave / 360 / Arc) 提取春晖校园网 Cookie"""
+    patterns = [
+        ('Chrome', os.path.expanduser('~/Library/Application Support/Google/Chrome/*/Cookies')),
+        ('Chrome', os.path.expanduser('~/Library/Application Support/Google/Chrome/*/Network/Cookies')),
+        ('Chrome', os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\User Data\*\Network\Cookies')),
+        ('Chrome', os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\User Data\*\Cookies')),
+        ('Chrome', os.path.expanduser('~/.config/google-chrome/*/Cookies')),
+        ('Edge', os.path.expanduser('~/Library/Application Support/Microsoft Edge/*/Cookies')),
+        ('Edge', os.path.expanduser('~/Library/Application Support/Microsoft Edge/*/Network/Cookies')),
+        ('Edge', os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\Edge\User Data\*\Network\Cookies')),
+        ('Edge', os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\Edge\User Data\*\Cookies')),
+        ('Brave', os.path.expanduser('~/Library/Application Support/BraveSoftware/Brave-Browser/*/Cookies')),
+        ('Brave', os.path.expandvars(r'%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\*\Network\Cookies')),
+        ('Arc', os.path.expanduser('~/Library/Application Support/Arc/User Data/*/Cookies')),
+        ('360', os.path.expandvars(r'%LOCALAPPDATA%\360Chrome\Chrome\User Data\*\Network\Cookies')),
+    ]
+    for b_name, pattern in patterns:
+        for p in glob.glob(pattern):
+            if not os.path.exists(p):
+                continue
+            tmp_path = None
+            try:
+                tmp = tempfile.NamedTemporaryFile(delete=False)
+                tmp_path = tmp.name
+                tmp.close()
+                shutil.copy2(p, tmp_path)
+                conn = sqlite3.connect(tmp_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT name, value, encrypted_value FROM cookies WHERE host_key LIKE '%10.181.200.3%' OR host_key LIKE '%chunhui%'")
+                rows = cursor.fetchall()
+                conn.close()
+                
+                sessionid = ''
+                csrftoken = ''
+                for name, value, enc_val in rows:
+                    cookie_val = value
+                    if not cookie_val and enc_val and os.name == 'nt':
+                        try:
+                            cookie_val = decrypt_windows_chromium_cookie(p, enc_val)
+                        except Exception:
+                            pass
+                    if name == 'sessionid' and cookie_val:
+                        sessionid = cookie_val
+                    elif name == 'csrftoken' and cookie_val:
+                        csrftoken = cookie_val
+                if sessionid:
+                    return {'browser': b_name, 'sessionid': sessionid, 'csrftoken': csrftoken}
+            except Exception:
+                pass
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try: os.unlink(tmp_path)
+                    except Exception: pass
+    return None
+
+def auto_get_browser_cookie():
+    """
+    自动按优先级扫描本机浏览器中的校园网登录凭据 (Safari -> Firefox -> Chrome/Edge)
+    """
+    res = extract_safari_cookies()
+    if res and res.get("sessionid"):
+        return res
+    res = extract_firefox_cookies()
+    if res and res.get("sessionid"):
+        return res
+    res = extract_chromium_cookies()
+    if res and res.get("sessionid"):
+        return res
+    return None
+
+def cmd_login_auto():
+    """自动从本机浏览器获取凭据并保存"""
+    log_info("正在扫描本机浏览器中的春晖校园网登录凭据...")
+    res = auto_get_browser_cookie()
+    if res and res.get("sessionid"):
+        b_name = res.get("browser", "浏览器")
+        sess_data = {
+            "sessionid": res["sessionid"],
+            "csrftoken": res.get("csrftoken", "")
+        }
+        save_session(sess_data)
+        log_success(f"已自动从 {b_name} 提取到春晖校园网 Cookie (sessionid: {res['sessionid'][:6]}...)！")
+        check_login_status()
+        return True
+    else:
+        log_warn("未在本地浏览器中检索到已登录的春晖校园网会话。")
+        print(f"\n{C_CYAN}提示：{C_RESET}")
+        print(f"  1. 您可以先在电脑浏览器中登录校园网: {BASE_URL}/account/login4Stu/")
+        print("  2. 或使用账号密码交互登录: `python3 ch_cli.py login`")
+        try:
+            open_br = input(f"\n是否在默认浏览器中打开登录页面？(Y/n) > ").strip().lower()
+            if open_br in ('', 'y', 'yes'):
+                webbrowser.open(f"{BASE_URL}/account/login4Stu/")
+                print("已调起浏览器打开登录页面。请在浏览器中完成登录，完成后按回车键重新提取...")
+                input()
+                res2 = auto_get_browser_cookie()
+                if res2 and res2.get("sessionid"):
+                    b_name = res2.get("browser", "浏览器")
+                    sess_data = {
+                        "sessionid": res2["sessionid"],
+                        "csrftoken": res2.get("csrftoken", "")
+                    }
+                    save_session(sess_data)
+                    log_success(f"已成功从 {b_name} 自动提取并保存登录凭据！")
+                    check_login_status()
+                    return True
+                else:
+                    log_error("仍未检测到有效 Cookie，请确认是否已在浏览器中成功登录。")
+        except (KeyboardInterrupt, EOFError):
+            print()
+        return False
+
 def cmd_login(args):
+    auto_flag = getattr(args, "auto", False)
+    if auto_flag:
+        cmd_login_auto()
+        return
+
     cookie_str = getattr(args, "cookie", None)
     username = getattr(args, "username", None)
     password = getattr(args, "password", None)
@@ -1895,15 +2169,18 @@ def cmd_login(args):
         return
 
     print(f"\n{C_BOLD}=== 春晖校园网登录 ==={C_RESET}")
-    print("  1. 账号密码登录 (需验证码)")
-    print("  2. 导入浏览器 Cookie 字符串")
+    print("  1. 自动从本机浏览器提取 Cookie (推荐，免验证码)")
+    print("  2. 账号密码登录 (需验证码)")
+    print("  3. 导入浏览器 Cookie 字符串 (手动粘贴)")
     try:
-        choice = input(f"{C_CYAN}请选择登录方式 (1-2, 默认 1) > {C_RESET}").strip()
+        choice = input(f"{C_CYAN}请选择登录方式 (1-3, 默认 1) > {C_RESET}").strip() or "1"
     except (KeyboardInterrupt, EOFError):
         print()
         return
         
-    if choice == "2":
+    if choice == "1":
+        cmd_login_auto()
+    elif choice == "3":
         print(f"{C_BOLD}请输入您从浏览器获取的 Cookie 字符串：{C_RESET}")
         print(f"{C_GREY}(通常可在浏览器开发者工具的 Network 面板请求头中找到。形如: sessionid=xxx; csrftoken=yyy){C_RESET}")
         try:
@@ -1923,7 +2200,6 @@ def cmd_login(args):
             log_error(f"获取验证码失败: {cap.get('error')}")
             return
             
-        import tempfile
         cap_file = os.path.join(tempfile.gettempdir(), "chunhui_captcha.png")
         try:
             img_data = base64.b64decode(cap["image"].split(",", 1)[1])
@@ -2054,149 +2330,1021 @@ def getkey():
     except (EOFError, KeyboardInterrupt):
         return 'esc'
 
-def handle_tui_action(choice):
-    print("\n" + "="*40)
-    try:
-        if choice == 0:  # 登录系统 (Import Cookie)
-            print("请输入从浏览器获取的 Cookie 字符串：")
-            cookie_str = input("Cookie > ").strip()
-            if cookie_str:
-                cmd_login(DummyArgs(cookie=cookie_str))
-        
-        elif choice == 1:  # 查询登录状态 (Check Status)
-            cmd_status(DummyArgs())
-            
-        elif choice == 2:  # 班级课表查询 (Class Schedule)
-            cmd_schedule(DummyArgs(grade=None, ch_class=None))
-            
-        elif choice == 3:  # 收件箱消息 (Inbox Messages)
-            print("请选择操作:")
-            print("  1. 查看收件箱消息列表")
-            print("  2. 查看指定消息详情与下载附件")
-            op = input("选择 (1-2) > ").strip()
-            if op == '1':
-                p_str = input("请输入页码 (回车默认为 1) > ").strip()
-                page = int(p_str) if p_str.isdigit() else 1
-                cmd_messages(DummyArgs(page=page, show=None, download=False, out="."))
-            elif op == '2':
-                m_str = input("请输入要查看的消息详情 ID > ").strip()
-                if m_str.isdigit():
-                    dl = input("是否下载该消息包含的所有附件？(y/N) > ").strip().lower() == 'y'
-                    out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
-                    cmd_messages(DummyArgs(page=1, show=int(m_str), download=dl, out=out_dir))
-                    
-        elif choice == 4:  # 纪律卫生考评 (Hygiene Appraisals)
-            print("请选择操作:")
-            print("  1. 查看纪律卫生考评记录列表")
-            print("  2. 查看指定考评记录详情与多媒体")
-            op = input("选择 (1-2) > ").strip()
-            if op == '1':
-                p_str = input("请输入页码 (回车默认为 1) > ").strip()
-                page = int(p_str) if p_str.isdigit() else 1
-                cmd_hygiene(DummyArgs(page=page, show=None, download=False, out="."))
-            elif op == '2':
-                m_str = input("请输入要查看的考评记录 ID > ").strip()
-                if m_str.isdigit():
-                    dl = input("是否下载该考评关联的多媒体附件？(y/N) > ").strip().lower() == 'y'
-                    out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
-                    cmd_hygiene(DummyArgs(page=1, show=int(m_str), download=dl, out=out_dir))
-                    
-        elif choice == 5:  # 教师值周安排 (Teacher Duty)
-            print("请选择操作:")
-            print("  1. 查看当前值周安排")
-            print("  2. 查看整学期值周总表")
-            print("  3. 模糊搜索指定值周教师或班级")
-            op = input("选择 (1-3) > ").strip()
-            if op == '1':
-                cmd_duty(DummyArgs(search=None, all=False))
-            elif op == '2':
-                cmd_duty(DummyArgs(search=None, all=True))
-            elif op == '3':
-                q = input("请输入要搜索的教师姓名或班级名称 > ").strip()
-                if q:
-                    cmd_duty(DummyArgs(search=q, all=False))
-                    
-        elif choice == 6:  # 校内文章资讯 (Campus News)
-            print("请选择要查询的文章栏目:")
-            print("  1. 通知公告 (announcement)")
-            print("  2. 新闻聚焦 (news)")
-            print("  3. 校内公示 (notice)")
-            print("  4. 值周小结 (duty)")
-            col_choice = input("选择 (1-4) > ").strip()
-            col_map = {'1': 'announcement', '2': 'news', '3': 'notice', '4': 'duty'}
-            col = col_map.get(col_choice)
-            if col:
-                print("\n请选择操作:")
-                print("  1. 查看栏目文章列表")
-                print("  2. 查看指定文章正文")
-                op = input("选择 (1-2) > ").strip()
-                if op == '1':
-                    p_str = input("请输入页码 (回车默认为 1) > ").strip()
-                    page = int(p_str) if p_str.isdigit() else 1
-                    cmd_news(DummyArgs(column=col, page=page, show=None, download=False, out="."))
-                elif op == '2':
-                    m_str = input("请输入要查看的文章 ID > ").strip()
-                    if m_str.isdigit():
-                        dl = input("是否下载文章附件？(y/N) > ").strip().lower() == 'y'
-                        out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
-                        cmd_news(DummyArgs(column=col, page=1, show=int(m_str), download=dl, out=out_dir))
-                        
-        elif choice == 7:  # 寝室查询与扣分 (Dormitory Info)
-            print("请选择操作:")
-            print("  1. 查询指定班级的寝室分配")
-            print("  2. 查询指定楼宇寝室考评扣分表")
-            op = input("选择 (1-2) > ").strip()
-            if op == '1':
-                g_str = input("请输入年级 (1=高一, 2=高二, 3=高三) > ").strip()
-                if g_str in ('1', '2', '3'):
-                    c_str = input("请输入班级名字或数字 (如: 1 或 1班) > ").strip()
-                    if c_str:
-                        cmd_bedroom(DummyArgs(action="class", grade=int(g_str), ch_class=c_str))
-            elif op == '2':
-                dorm = input("请输入宿舍楼宇名称或ID (如 1 或 3号楼) > ").strip()
-                if dorm:
-                    start = input("请输入开始日期 (格式 YYYY-MM-DD，回车默认为30天前) > ").strip() or None
-                    end = input("请输入结束日期 (格式 YYYY-MM-DD，回车默认为今天) > ").strip() or None
-                    all_flag = input("是否显示该楼宇全部宿舍（包括未扣分的）？(y/N) > ").strip().lower() == 'y'
-                    cmd_bedroom(DummyArgs(action="hygiene", dorm=dorm, start=start, end=end, all=all_flag))
-                    
-        elif choice == 8:  # 校园失物招领 (Lost & Found)
-            print("请选择操作:")
-            print("  1. 查看全校失物招领列表")
-            print("  2. 查看指定失物招领详情")
-            op = input("选择 (1-2) > ").strip()
-            if op == '1':
-                p_str = input("请输入页码 (回车默认为 1) > ").strip()
-                page = int(p_str) if p_str.isdigit() else 1
-                cmd_lostfound(DummyArgs(page=page, show=None, download=False, out="."))
-            elif op == '2':
-                m_str = input("请输入要查看的详情 ID > ").strip()
-                if m_str.isdigit():
-                    dl = input("是否下载关联的图片多媒体附件？(y/N) > ").strip().lower() == 'y'
-                    out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
-                    cmd_lostfound(DummyArgs(page=1, show=int(m_str), download=dl, out=out_dir))
-                    
-        elif choice == 9:  # 文件寄存与提取 (File Station)
-            print("请选择操作:")
-            print("  1. 上传本地文件")
-            print("  2. 提取远端文件")
-            op = input("选择 (1-2) > ").strip()
-            if op == '1':
-                path = input("请输入本地文件路径 > ").strip()
-                if path:
-                    cmd_file_upload(path)
-            elif op == '2':
-                pwd = input("请输入 6 位提取码 > ").strip()
-                if pwd:
-                    out_dir = input("请输入保存目录 (回车默认为当前目录) > ").strip() or "."
-                    cmd_file_download(pwd, out_dir)
-                    
+def fetch_messages_data(page):
+    url = f"/sitemessage/message-Receive-list/?page={page}"
+    status, body, _ = make_request(url, method="GET")
+    if status != 200:
+        return []
+    html_content = body.decode("utf-8", errors="ignore")
+    tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
+    trs = tr_pattern.findall(html_content)
+    rows = []
+    for tr in trs:
+        if "show-Message" in tr or "del_siteMessage" in tr:
+            id_m = re.search(r'/sitemessage/show-Message/(\d+)/\s*', tr)
+            msg_id = id_m.group(1) if id_m else ""
+            if not msg_id:
+                id_m = re.search(r'del_siteMessage\(this,(\d+)\)', tr)
+                if id_m:
+                    msg_id = id_m.group(1)
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+            if len(tds) >= 3:
+                title = clean_html(tds[1])
+                sender = clean_html(tds[2])
+                date = clean_html(tds[3]) if len(tds) > 3 else ""
+                is_unread = ("未阅" in tr or "未读" in tr or "font-weight" in tr)
+                rows.append({
+                    "id": msg_id,
+                    "title": title,
+                    "sender": sender,
+                    "date": date,
+                    "unread": is_unread
+                })
+    return rows
 
+def show_message_detail_tui(msg_id):
+    if not msg_id:
+        return
+    os.system('cls' if os.name == 'nt' else 'clear')
+    cmd_messages(DummyArgs(show=int(msg_id), download=False, out="."))
+    print(f"\n{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [d] 下载全部关联附件  [b / ESC / 回车] 返回信件列表")
+    k = getkey()
+    if k in ('d', 'D'):
+        try:
+            out_dir = input("\n请输入附件保存目录 (直接回车保存在当前目录) > ").strip() or "."
+            cmd_messages(DummyArgs(show=int(msg_id), download=True, out=out_dir))
+            print("\n下载完成。按任意键返回信件列表...")
+            getkey()
+        except (KeyboardInterrupt, EOFError):
+            pass
+
+def tui_messages_paginated():
+    server_page = 1
+    page_size = 6
+    selected_idx = 0
+    subpage = 0
+    cached_pages = {}
+    
+    while True:
+        if server_page not in cached_pages:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(f"\n{C_CYAN}[i] 正在获取收件箱信件 (第 {server_page} 页)...{C_RESET}")
+            items = fetch_messages_data(server_page)
+            cached_pages[server_page] = items
+        else:
+            items = cached_pages[server_page]
+            
+        total_subpages = max(1, (len(items) + page_size - 1) // page_size) if items else 1
+        if subpage >= total_subpages:
+            subpage = max(0, total_subpages - 1)
+            
+        start_idx = subpage * page_size
+        end_idx = min(start_idx + page_size, len(items)) if items else 0
+        cur_batch = items[start_idx:end_idx] if items else []
+        
+        if selected_idx >= len(cur_batch):
+            selected_idx = max(0, len(cur_batch) - 1)
+            
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}📨 校内个人收件箱 (Inbox Messages){C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        page_info = f"{C_BOLD}[当前页码]{C_RESET} 第 {server_page} 页 · 分屏 {subpage+1}/{total_subpages} (本屏 {len(cur_batch)} 条 / 共 {len(items)} 条)"
+        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {C_GREEN}● 就绪{C_RESET}"))
+        print(render_box_line("├", "─", "┤"))
+        
+        if not items:
+            print(render_row(f"{C_YELLOW}当前收件箱没有信件记录或网络无法直连校园网{C_RESET}", "center"))
+            for _ in range(10):
+                print(render_row(""))
+        else:
+            for idx, msg in enumerate(cur_batch):
+                num_tag = f"[{start_idx + idx + 1:02d}]"
+                m_id = msg.get("id", "")
+                title = msg.get("title", "无标题")
+                sender = msg.get("sender", "未知")
+                date = msg.get("date", "")
+                unread = msg.get("unread", False)
+                status_tag = f"{C_RED}[●未阅]{C_RESET}" if unread else f"{C_GREY}[○已阅]{C_RESET}"
+                
+                max_title_w = 40
+                if get_visual_width(title) > max_title_w:
+                    truncated = ""
+                    w = 0
+                    for ch in title:
+                        cw = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+                        if w + cw > max_title_w - 3:
+                            break
+                        truncated += ch
+                        w += cw
+                    title = truncated + "..."
+                
+                if idx == selected_idx:
+                    l1 = f"{C_GREEN}{C_BOLD}▶ {num_tag} [{m_id}] {title}{C_RESET}"
+                    l2 = f"        发件人: {C_CYAN}{sender}{C_RESET}    时间: {C_GREY}{date}{C_RESET}    {status_tag}"
+                else:
+                    l1 = f"  {C_GREY}{num_tag}{C_RESET} [{m_id}] {title}"
+                    l2 = f"        发件人: {C_GREY}{sender}{C_RESET}    时间: {C_GREY}{date}{C_RESET}    {status_tag}"
+                print(render_row(l1))
+                print(render_row(l2))
+                
+            for _ in range((page_size - len(cur_batch)) * 2):
+                print(render_row(""))
+                
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_CYAN}{C_BOLD}[操作]{C_RESET} [↑/k] 上移  [↓/j] 下移  [Enter] 查看正文  [n] 下页  [p] 上页  [g] 跳页  [b] 返回", "center"))
+        print(render_box_line("└", "─", "┘"))
+        
+        k = getkey()
+        if k in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+            if selected_idx > 0:
+                selected_idx -= 1
+            elif subpage > 0:
+                subpage -= 1
+                selected_idx = page_size - 1
+            elif server_page > 1:
+                server_page -= 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+            if selected_idx < len(cur_batch) - 1:
+                selected_idx += 1
+            elif subpage < total_subpages - 1:
+                subpage += 1
+                selected_idx = 0
+            else:
+                server_page += 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('n', 'right'):
+            if subpage < total_subpages - 1:
+                subpage += 1
+                selected_idx = 0
+            else:
+                server_page += 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('p', 'left'):
+            if subpage > 0:
+                subpage -= 1
+                selected_idx = 0
+            elif server_page > 1:
+                server_page -= 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('g',):
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(f"\n{C_BOLD}跳转至指定页{C_RESET}")
+            try:
+                g_str = input(f"请输入要跳转的页码 (当前第 {server_page} 页) > ").strip()
+                if g_str.isdigit() and int(g_str) > 0:
+                    server_page = int(g_str)
+                    subpage = 0
+                    selected_idx = 0
+            except (KeyboardInterrupt, EOFError):
+                pass
+        elif k in ('r',):
+            cached_pages.pop(server_page, None)
+        elif k in ('enter', 'space', '\r', '\n'):
+            if cur_batch and 0 <= selected_idx < len(cur_batch):
+                target_msg = cur_batch[selected_idx]
+                show_message_detail_tui(target_msg.get("id"))
+        elif k in ('b', 'q', 'esc'):
+            break
+
+def show_article_detail_tui(col, article_id):
+    if not article_id:
+        return
+    os.system('cls' if os.name == 'nt' else 'clear')
+    cmd_news(DummyArgs(column=col, show=int(article_id), download=False, out="."))
+    print(f"\n{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [d] 下载文章附件  [b / ESC / 回车] 返回文章列表")
+    k = getkey()
+    if k in ('d', 'D'):
+        try:
+            out_dir = input("\n请输入附件保存目录 (直接回车保存在当前目录) > ").strip() or "."
+            cmd_news(DummyArgs(column=col, show=int(article_id), download=True, out=out_dir))
+            print("\n下载完成。按任意键返回文章列表...")
+            getkey()
+        except (KeyboardInterrupt, EOFError):
+            pass
+
+def tui_news_column_paginated(col, col_name):
+    server_page = 1
+    page_size = 6
+    selected_idx = 0
+    subpage = 0
+    cached_pages = {}
+    
+    col_map = {'announcement': '16', 'news': '17', 'notice': '18', 'duty': '19'}
+    col_id = col_map.get(col, '16')
+    
+    while True:
+        if server_page not in cached_pages:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(f"\n{C_CYAN}[i] 正在获取 {col_name} 文章列表 (第 {server_page} 页)...{C_RESET}")
+            status, body, _ = make_request(f"/article/column-detail/{col_id}/?page={server_page}", method="GET", follow_redirects=True)
+            items = []
+            if status == 200:
+                html_content = body.decode("utf-8", errors="ignore")
+                matches = re.findall(r'<div class="ArticleTitle">\s*<a href="/article/article-detail/(\d+)/"[^>]*>(.*?)</a>\s*</div>.*?<div class="ArticleTime">(.*?)</div>', html_content, re.DOTALL)
+                for m_id, title_raw, time_raw in matches:
+                    items.append({
+                        "id": m_id,
+                        "title": clean_html(title_raw),
+                        "date": clean_html(time_raw)
+                    })
+            cached_pages[server_page] = items
+        else:
+            items = cached_pages[server_page]
+            
+        total_subpages = max(1, (len(items) + page_size - 1) // page_size) if items else 1
+        if subpage >= total_subpages:
+            subpage = max(0, total_subpages - 1)
+        start_idx = subpage * page_size
+        end_idx = min(start_idx + page_size, len(items)) if items else 0
+        cur_batch = items[start_idx:end_idx] if items else []
+        if selected_idx >= len(cur_batch):
+            selected_idx = max(0, len(cur_batch) - 1)
+        
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}📰 {col_name}{C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        page_info = f"{C_BOLD}[页码]{C_RESET} 第 {server_page} 页 · 分屏 {subpage+1}/{total_subpages} (本屏 {len(cur_batch)} 篇 / 共 {len(items)} 篇)"
+        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {C_GREEN}● 就绪{C_RESET}"))
+        print(render_box_line("├", "─", "┤"))
+        
+        if not items:
+            print(render_row(f"{C_YELLOW}当前栏目暂无文章或未连接到校园网{C_RESET}", "center"))
+            for _ in range(10):
+                print(render_row(""))
+        else:
+            for idx, art in enumerate(cur_batch):
+                num_tag = f"[{start_idx + idx + 1:02d}]"
+                a_id = art.get("id", "")
+                title = art.get("title", "无标题")
+                date = art.get("date", "")
+                max_w = 46
+                if get_visual_width(title) > max_w:
+                    tr = ""
+                    w = 0
+                    for ch in title:
+                        cw = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+                        if w + cw > max_w - 3:
+                            break
+                        tr += ch
+                        w += cw
+                    title = tr + "..."
+                if idx == selected_idx:
+                    l1 = f"{C_GREEN}{C_BOLD}▶ {num_tag} [{a_id}] {title}{C_RESET}"
+                    l2 = f"        发布时间: {C_GREY}{date}{C_RESET}"
+                else:
+                    l1 = f"  {C_GREY}{num_tag}{C_RESET} [{a_id}] {title}"
+                    l2 = f"        发布时间: {C_GREY}{date}{C_RESET}"
+                print(render_row(l1))
+                print(render_row(l2))
+            for _ in range((page_size - len(cur_batch)) * 2):
+                print(render_row(""))
+            
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_CYAN}{C_BOLD}[操作]{C_RESET} [↑/k] 上移  [↓/j] 下移  [Enter] 阅读正文  [n] 下页  [p] 上页  [g] 跳页  [b] 返回", "center"))
+        print(render_box_line("└", "─", "┘"))
+        
+        k = getkey()
+        if k in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+            if selected_idx > 0:
+                selected_idx -= 1
+            elif subpage > 0:
+                subpage -= 1
+                selected_idx = page_size - 1
+            elif server_page > 1:
+                server_page -= 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+            if selected_idx < len(cur_batch) - 1:
+                selected_idx += 1
+            elif subpage < total_subpages - 1:
+                subpage += 1
+                selected_idx = 0
+            else:
+                server_page += 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('n', 'right'):
+            if subpage < total_subpages - 1:
+                subpage += 1
+                selected_idx = 0
+            else:
+                server_page += 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('p', 'left'):
+            if subpage > 0:
+                subpage -= 1
+                selected_idx = 0
+            elif server_page > 1:
+                server_page -= 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('g',):
+            os.system('cls' if os.name == 'nt' else 'clear')
+            try:
+                g_str = input(f"请输入要跳转的页码 (当前第 {server_page} 页) > ").strip()
+                if g_str.isdigit() and int(g_str) > 0:
+                    server_page = int(g_str)
+                    subpage = 0
+                    selected_idx = 0
+            except (KeyboardInterrupt, EOFError):
+                pass
+        elif k in ('r',):
+            cached_pages.pop(server_page, None)
+        elif k in ('enter', 'space', '\r', '\n'):
+            if cur_batch and 0 <= selected_idx < len(cur_batch):
+                show_article_detail_tui(col, cur_batch[selected_idx].get("id"))
+        elif k in ('b', 'q', 'esc'):
+            break
+
+def tui_news_interactive():
+    col_opts = [
+        ("通知公告 (announcement)", "announcement"),
+        ("新闻聚焦 (news)", "news"),
+        ("校内公示 (notice)", "notice"),
+        ("值周小结 (duty)", "duty"),
+        ("返回主菜单", "back")
+    ]
+    sub_idx = 0
+    while True:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}📰 校内文章资讯 (Campus News){C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row("请选择要浏览的文章栏目："))
+        print(render_box_line("├", "─", "┤"))
+        for idx, (c_name, _) in enumerate(col_opts):
+            num_tag = f"[{idx+1}]" if idx < len(col_opts) - 1 else "[0]"
+            if idx == sub_idx:
+                row_str = f"{C_GREEN}{C_BOLD}▶ {num_tag} {c_name}{C_RESET}"
+            else:
+                row_str = f"  {C_GREY}{num_tag}{C_RESET} {c_name}"
+            print(render_row(row_str))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [↑/k] 上移  [↓/j] 下移  [Enter] 确认  [1-4/0] 直达  [b/q] 返回", "center"))
+        print(render_box_line("└", "─", "┘"))
+        
+        k = getkey()
+        if k in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+            sub_idx = (sub_idx - 1) % len(col_opts)
+        elif k in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+            sub_idx = (sub_idx + 1) % len(col_opts)
+        elif k in ('1', '2', '3', '4'):
+            sub_idx = int(k) - 1
+            tui_news_column_paginated(col_opts[sub_idx][1], col_opts[sub_idx][0])
+        elif k == '0' or k in ('b', 'q', 'esc'):
+            break
+        elif k in ('enter', 'space', '\r', '\n'):
+            if col_opts[sub_idx][1] == 'back':
+                break
+            tui_news_column_paginated(col_opts[sub_idx][1], col_opts[sub_idx][0])
+
+def show_hygiene_detail_tui(h_id):
+    if not h_id:
+        return
+    os.system('cls' if os.name == 'nt' else 'clear')
+    cmd_hygiene(DummyArgs(show=int(h_id), download=False, out="."))
+    print(f"\n{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [d] 下载关联多媒体附件  [b / ESC / 回车] 返回考评列表")
+    k = getkey()
+    if k in ('d', 'D'):
+        try:
+            out_dir = input("\n请输入多媒体保存目录 (直接回车保存在当前目录) > ").strip() or "."
+            cmd_hygiene(DummyArgs(show=int(h_id), download=True, out=out_dir))
+            print("\n下载完成。按任意键返回考评列表...")
+            getkey()
+        except (KeyboardInterrupt, EOFError):
+            pass
+
+def tui_hygiene_paginated():
+    server_page = 1
+    page_size = 6
+    selected_idx = 0
+    subpage = 0
+    cached_pages = {}
+    
+    while True:
+        if server_page not in cached_pages:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(f"\n{C_CYAN}[i] 正在获取纪律卫生考评记录 (第 {server_page} 页)...{C_RESET}")
+            status, body, _ = make_request(f"/classappraise/hygienePictures_receive_list/?page={server_page}", method="GET")
+            items = []
+            if status == 200:
+                html_content = body.decode("utf-8", errors="ignore")
+                trs = re.findall(r'<tr[^>]*>(.*?)</tr>', html_content, re.DOTALL)
+                for tr in trs:
+                    if "show-Message" in tr:
+                        id_m = re.search(r'/classappraise/show-Message/(\d+)/\s*', tr)
+                        h_id = id_m.group(1) if id_m else ""
+                        tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+                        if len(tds) >= 3:
+                            desc = clean_html(tds[1])
+                            date = clean_html(tds[2]) if len(tds) > 2 else ""
+                            items.append({"id": h_id, "desc": desc, "date": date})
+            cached_pages[server_page] = items
+        else:
+            items = cached_pages[server_page]
+            
+        total_subpages = max(1, (len(items) + page_size - 1) // page_size) if items else 1
+        if subpage >= total_subpages:
+            subpage = max(0, total_subpages - 1)
+        start_idx = subpage * page_size
+        end_idx = min(start_idx + page_size, len(items)) if items else 0
+        cur_batch = items[start_idx:end_idx] if items else []
+        if selected_idx >= len(cur_batch):
+            selected_idx = max(0, len(cur_batch) - 1)
+        
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}🧹 纪律卫生考评记录 (Hygiene Appraisals){C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        page_info = f"{C_BOLD}[页码]{C_RESET} 第 {server_page} 页 · 分屏 {subpage+1}/{total_subpages} (本屏 {len(cur_batch)} 条 / 共 {len(items)} 条)"
+        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {C_GREEN}● 就绪{C_RESET}"))
+        print(render_box_line("├", "─", "┤"))
+        
+        if not items:
+            print(render_row(f"{C_YELLOW}当前页暂无考评记录或未连接到校园网{C_RESET}", "center"))
+            for _ in range(10):
+                print(render_row(""))
+        else:
+            for idx, hg in enumerate(cur_batch):
+                num_tag = f"[{start_idx + idx + 1:02d}]"
+                h_id = hg.get("id", "")
+                desc = hg.get("desc", "无说明")
+                date = hg.get("date", "")
+                max_w = 46
+                if get_visual_width(desc) > max_w:
+                    tr = ""
+                    w = 0
+                    for ch in desc:
+                        cw = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+                        if w + cw > max_w - 3:
+                            break
+                        tr += ch
+                        w += cw
+                    desc = tr + "..."
+                if idx == selected_idx:
+                    l1 = f"{C_GREEN}{C_BOLD}▶ {num_tag} [{h_id}] {desc}{C_RESET}"
+                    l2 = f"        考评时间: {C_GREY}{date}{C_RESET}"
+                else:
+                    l1 = f"  {C_GREY}{num_tag}{C_RESET} [{h_id}] {desc}"
+                    l2 = f"        考评时间: {C_GREY}{date}{C_RESET}"
+                print(render_row(l1))
+                print(render_row(l2))
+            for _ in range((page_size - len(cur_batch)) * 2):
+                print(render_row(""))
+            
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_CYAN}{C_BOLD}[操作]{C_RESET} [↑/k] 上移  [↓/j] 下移  [Enter] 详情证据  [n] 下页  [p] 上页  [g] 跳页  [b] 返回", "center"))
+        print(render_box_line("└", "─", "┘"))
+        
+        k = getkey()
+        if k in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+            if selected_idx > 0:
+                selected_idx -= 1
+            elif subpage > 0:
+                subpage -= 1
+                selected_idx = page_size - 1
+            elif server_page > 1:
+                server_page -= 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+            if selected_idx < len(cur_batch) - 1:
+                selected_idx += 1
+            elif subpage < total_subpages - 1:
+                subpage += 1
+                selected_idx = 0
+            else:
+                server_page += 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('n', 'right'):
+            if subpage < total_subpages - 1:
+                subpage += 1
+                selected_idx = 0
+            else:
+                server_page += 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('p', 'left'):
+            if subpage > 0:
+                subpage -= 1
+                selected_idx = 0
+            elif server_page > 1:
+                server_page -= 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('g',):
+            os.system('cls' if os.name == 'nt' else 'clear')
+            try:
+                g_str = input(f"请输入要跳转的页码 (当前第 {server_page} 页) > ").strip()
+                if g_str.isdigit() and int(g_str) > 0:
+                    server_page = int(g_str)
+                    subpage = 0
+                    selected_idx = 0
+            except (KeyboardInterrupt, EOFError):
+                pass
+        elif k in ('r',):
+            cached_pages.pop(server_page, None)
+        elif k in ('enter', 'space', '\r', '\n'):
+            if cur_batch and 0 <= selected_idx < len(cur_batch):
+                show_hygiene_detail_tui(cur_batch[selected_idx].get("id"))
+        elif k in ('b', 'q', 'esc'):
+            break
+
+def show_lostfound_detail_tui(l_id):
+    if not l_id:
+        return
+    os.system('cls' if os.name == 'nt' else 'clear')
+    cmd_lostfound(DummyArgs(show=int(l_id), download=False, out="."))
+    print(f"\n{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [d] 下载关联图片  [b / ESC / 回车] 返回列表")
+    k = getkey()
+    if k in ('d', 'D'):
+        try:
+            out_dir = input("\n请输入图片保存目录 (直接回车保存在当前目录) > ").strip() or "."
+            cmd_lostfound(DummyArgs(show=int(l_id), download=True, out=out_dir))
+            print("\n下载完成。按任意键返回列表...")
+            getkey()
+        except (KeyboardInterrupt, EOFError):
+            pass
+
+def tui_lostfound_paginated():
+    server_page = 1
+    page_size = 6
+    selected_idx = 0
+    subpage = 0
+    cached_pages = {}
+    
+    while True:
+        if server_page not in cached_pages:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(f"\n{C_CYAN}[i] 正在获取失物招领记录 (第 {server_page} 页)...{C_RESET}")
+            status, body, _ = make_request(f"/lostAndFound/lostAndFoundList/?page={server_page}", method="GET", follow_redirects=True)
+            items = []
+            if status == 200:
+                html_content = body.decode("utf-8", errors="ignore")
+                matches = re.findall(r'<div class="ArticleTitle">\s*<a href="/lostAndFound/lostAndFoundDetail/(\d+)/"[^>]*>(.*?)</a>\s*</div>.*?<div class="ArticleTime">(.*?)</div>', html_content, re.DOTALL)
+                for m_id, title_raw, time_raw in matches:
+                    items.append({
+                        "id": m_id,
+                        "title": clean_html(title_raw),
+                        "date": clean_html(time_raw)
+                    })
+            cached_pages[server_page] = items
+        else:
+            items = cached_pages[server_page]
+            
+        total_subpages = max(1, (len(items) + page_size - 1) // page_size) if items else 1
+        if subpage >= total_subpages:
+            subpage = max(0, total_subpages - 1)
+        start_idx = subpage * page_size
+        end_idx = min(start_idx + page_size, len(items)) if items else 0
+        cur_batch = items[start_idx:end_idx] if items else []
+        if selected_idx >= len(cur_batch):
+            selected_idx = max(0, len(cur_batch) - 1)
+        
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}🔍 校园失物招领 (Lost & Found){C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        page_info = f"{C_BOLD}[页码]{C_RESET} 第 {server_page} 页 · 分屏 {subpage+1}/{total_subpages} (本屏 {len(cur_batch)} 条 / 共 {len(items)} 条)"
+        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {C_GREEN}● 就绪{C_RESET}"))
+        print(render_box_line("├", "─", "┤"))
+        
+        if not items:
+            print(render_row(f"{C_YELLOW}当前暂无失物招领记录或未连接到校园网{C_RESET}", "center"))
+            for _ in range(10):
+                print(render_row(""))
+        else:
+            for idx, item in enumerate(cur_batch):
+                num_tag = f"[{start_idx + idx + 1:02d}]"
+                l_id = item.get("id", "")
+                title = item.get("title", "未命名物品")
+                date = item.get("date", "")
+                max_w = 46
+                if get_visual_width(title) > max_w:
+                    tr = ""
+                    w = 0
+                    for ch in title:
+                        cw = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+                        if w + cw > max_w - 3:
+                            break
+                        tr += ch
+                        w += cw
+                    title = tr + "..."
+                if idx == selected_idx:
+                    l1 = f"{C_GREEN}{C_BOLD}▶ {num_tag} [{l_id}] {title}{C_RESET}"
+                    l2 = f"        登记时间: {C_GREY}{date}{C_RESET}"
+                else:
+                    l1 = f"  {C_GREY}{num_tag}{C_RESET} [{l_id}] {title}"
+                    l2 = f"        登记时间: {C_GREY}{date}{C_RESET}"
+                print(render_row(l1))
+                print(render_row(l2))
+            for _ in range((page_size - len(cur_batch)) * 2):
+                print(render_row(""))
+            
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_CYAN}{C_BOLD}[操作]{C_RESET} [↑/k] 上移  [↓/j] 下移  [Enter] 详情图片  [n] 下页  [p] 上页  [g] 跳页  [b] 返回", "center"))
+        print(render_box_line("└", "─", "┘"))
+        
+        k = getkey()
+        if k in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+            if selected_idx > 0:
+                selected_idx -= 1
+            elif subpage > 0:
+                subpage -= 1
+                selected_idx = page_size - 1
+            elif server_page > 1:
+                server_page -= 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+            if selected_idx < len(cur_batch) - 1:
+                selected_idx += 1
+            elif subpage < total_subpages - 1:
+                subpage += 1
+                selected_idx = 0
+            else:
+                server_page += 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('n', 'right'):
+            if subpage < total_subpages - 1:
+                subpage += 1
+                selected_idx = 0
+            else:
+                server_page += 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('p', 'left'):
+            if subpage > 0:
+                subpage -= 1
+                selected_idx = 0
+            elif server_page > 1:
+                server_page -= 1
+                subpage = 0
+                selected_idx = 0
+        elif k in ('g',):
+            os.system('cls' if os.name == 'nt' else 'clear')
+            try:
+                g_str = input(f"请输入要跳转的页码 (当前第 {server_page} 页) > ").strip()
+                if g_str.isdigit() and int(g_str) > 0:
+                    server_page = int(g_str)
+                    subpage = 0
+                    selected_idx = 0
+            except (KeyboardInterrupt, EOFError):
+                pass
+        elif k in ('r',):
+            cached_pages.pop(server_page, None)
+        elif k in ('enter', 'space', '\r', '\n'):
+            if cur_batch and 0 <= selected_idx < len(cur_batch):
+                show_lostfound_detail_tui(cur_batch[selected_idx].get("id"))
+        elif k in ('b', 'q', 'esc'):
+            break
+
+def tui_schedule_interactive():
+    curr_grade = 1
+    curr_class = "1"
+    
+    while True:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}📅 班级课表查询 (Class Schedule){C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        grade_name = {1: "高一年级", 2: "高二年级", 3: "高三年级"}.get(curr_grade, f"高{curr_grade}")
+        print(render_row(f"{C_BOLD}[当前目标]{C_RESET} {C_YELLOW}{grade_name} {curr_class}班{C_RESET}"))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row("正在从校园网拉取课表并渲染..."))
+        print(render_box_line("└", "─", "┘\n"))
+        
+        cmd_schedule(DummyArgs(grade=curr_grade, ch_class=curr_class))
+        
+        print(f"\n{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [c] 切换班级  [g] 切换年级  [b / ESC / q] 返回主菜单")
+        k = getkey()
+        if k in ('c', 'C'):
+            try:
+                new_c = input(f"请输入要查询的班级 (1-12，当前: {curr_class}) > ").strip()
+                if new_c:
+                    curr_class = new_c
+            except (KeyboardInterrupt, EOFError):
+                pass
+        elif k in ('g', 'G'):
+            try:
+                new_g = input(f"请输入年级 (1=高一, 2=高二, 3=高三，当前: {curr_grade}) > ").strip()
+                if new_g in ('1', '2', '3'):
+                    curr_grade = int(new_g)
+            except (KeyboardInterrupt, EOFError):
+                pass
+        elif k in ('b', 'q', 'esc', '\x1b'):
+            break
+
+def execute_duty_action(action):
+    os.system('cls' if os.name == 'nt' else 'clear')
+    if action == 'current':
+        cmd_duty(DummyArgs(search=None, all=False))
+    elif action == 'all':
+        cmd_duty(DummyArgs(search=None, all=True))
+    elif action == 'search':
+        try:
+            q = input(f"\n请输入要搜索的教师姓名或班级名称 > ").strip()
+            if q:
+                cmd_duty(DummyArgs(search=q, all=False))
+        except (KeyboardInterrupt, EOFError):
+            pass
+    print(f"\n{C_CYAN}按任意键返回值周菜单...{C_RESET}")
+    getkey()
+
+def tui_duty_interactive():
+    duty_opts = [
+        ("查看当前周值周安排 (Current Week)", "current"),
+        ("查看整学期值周排班总表 (Full Semester)", "all"),
+        ("搜索值周教师或班级姓名 (Search)", "search"),
+        ("返回主菜单", "back")
+    ]
+    sub_idx = 0
+    while True:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}📋 教师值周安排 (Teacher Duty){C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row("请选择查询维度："))
+        print(render_box_line("├", "─", "┤"))
+        for idx, (d_name, _) in enumerate(duty_opts):
+            num_tag = f"[{idx+1}]" if idx < len(duty_opts) - 1 else "[0]"
+            if idx == sub_idx:
+                row_str = f"{C_GREEN}{C_BOLD}▶ {num_tag} {d_name}{C_RESET}"
+            else:
+                row_str = f"  {C_GREY}{num_tag}{C_RESET} {d_name}"
+            print(render_row(row_str))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [↑/k] 上移  [↓/j] 下移  [Enter] 确认  [1-3/0] 直达  [b/q] 返回", "center"))
+        print(render_box_line("└", "─", "┘"))
+        
+        k = getkey()
+        if k in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+            sub_idx = (sub_idx - 1) % len(duty_opts)
+        elif k in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+            sub_idx = (sub_idx + 1) % len(duty_opts)
+        elif k in ('1', '2', '3'):
+            sub_idx = int(k) - 1
+            execute_duty_action(duty_opts[sub_idx][1])
+        elif k == '0' or k in ('b', 'q', 'esc'):
+            break
+        elif k in ('enter', 'space', '\r', '\n'):
+            if duty_opts[sub_idx][1] == 'back':
+                break
+            execute_duty_action(duty_opts[sub_idx][1])
+
+def execute_bedroom_action(action):
+    os.system('cls' if os.name == 'nt' else 'clear')
+    if action == 'class':
+        try:
+            g_str = input("请输入年级 (1=高一, 2=高二, 3=高三，默认 1) > ").strip() or "1"
+            c_str = input("请输入班级 (如 1 或 1班，默认 1) > ").strip() or "1"
+            if g_str in ('1', '2', '3') and c_str:
+                cmd_bedroom(DummyArgs(action="class", grade=int(g_str), ch_class=c_str))
+        except (KeyboardInterrupt, EOFError):
+            pass
+    elif action == 'hygiene':
+        try:
+            dorm = input("请输入宿舍楼宇名称或编号 (如 1 或 3号楼，默认 1) > ").strip() or "1"
+            start = input("请输入开始日期 (YYYY-MM-DD，回车默认为30天前) > ").strip() or None
+            end = input("请输入结束日期 (YYYY-MM-DD，回车默认为今天) > ").strip() or None
+            all_flag = input("是否显示该楼宇全部宿舍（包括未扣分的）？(y/N) > ").strip().lower() == 'y'
+            cmd_bedroom(DummyArgs(action="hygiene", dorm=dorm, start=start, end=end, all=all_flag))
+        except (KeyboardInterrupt, EOFError):
+            pass
+    print(f"\n{C_CYAN}按任意键返回寝室菜单...{C_RESET}")
+    getkey()
+
+def tui_bedroom_interactive():
+    bed_opts = [
+        ("查询指定班级的寝室分配分布 (Class Bedrooms)", "class"),
+        ("查询指定楼宇寝室日常考评扣分表 (Dorm Hygiene Deductions)", "hygiene"),
+        ("返回主菜单", "back")
+    ]
+    sub_idx = 0
+    while True:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}🛏️ 寝室查询与日常扣分 (Dormitory Info){C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row("请选择寝室业务功能："))
+        print(render_box_line("├", "─", "┤"))
+        for idx, (b_name, _) in enumerate(bed_opts):
+            num_tag = f"[{idx+1}]" if idx < len(bed_opts) - 1 else "[0]"
+            if idx == sub_idx:
+                row_str = f"{C_GREEN}{C_BOLD}▶ {num_tag} {b_name}{C_RESET}"
+            else:
+                row_str = f"  {C_GREY}{num_tag}{C_RESET} {b_name}"
+            print(render_row(row_str))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [↑/k] 上移  [↓/j] 下移  [Enter] 确认  [1-2/0] 直达  [b/q] 返回", "center"))
+        print(render_box_line("└", "─", "┘"))
+        
+        k = getkey()
+        if k in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+            sub_idx = (sub_idx - 1) % len(bed_opts)
+        elif k in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+            sub_idx = (sub_idx + 1) % len(bed_opts)
+        elif k in ('1', '2'):
+            sub_idx = int(k) - 1
+            execute_bedroom_action(bed_opts[sub_idx][1])
+        elif k == '0' or k in ('b', 'q', 'esc'):
+            break
+        elif k in ('enter', 'space', '\r', '\n'):
+            if bed_opts[sub_idx][1] == 'back':
+                break
+            execute_bedroom_action(bed_opts[sub_idx][1])
+
+def execute_file_action(action):
+    os.system('cls' if os.name == 'nt' else 'clear')
+    if action == 'upload':
+        try:
+            path = input("请输入要上传的本地文件完整路径 > ").strip()
+            if path:
+                cmd_file_upload(path)
+        except (KeyboardInterrupt, EOFError):
+            pass
+    elif action == 'download':
+        try:
+            pwd = input("请输入 6 位提取码 > ").strip()
+            if pwd:
+                out_dir = input("请输入保存目录 (直接回车保存到当前目录) > ").strip() or "."
+                cmd_file_download(pwd, out_dir)
+        except (KeyboardInterrupt, EOFError):
+            pass
+    print(f"\n{C_CYAN}按任意键返回文件菜单...{C_RESET}")
+    getkey()
+
+def tui_file_interactive():
+    file_opts = [
+        ("上传本地文件 (生成 6 位安全提取码)", "upload"),
+        ("提取远端文件 (输入 6 位提取码并保存)", "download"),
+        ("返回主菜单", "back")
+    ]
+    sub_idx = 0
+    while True:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}📦 学校文件寄存与提取 (File Station){C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row("请选择文件存取操作："))
+        print(render_box_line("├", "─", "┤"))
+        for idx, (f_name, _) in enumerate(file_opts):
+            num_tag = f"[{idx+1}]" if idx < len(file_opts) - 1 else "[0]"
+            if idx == sub_idx:
+                row_str = f"{C_GREEN}{C_BOLD}▶ {num_tag} {f_name}{C_RESET}"
+            else:
+                row_str = f"  {C_GREY}{num_tag}{C_RESET} {f_name}"
+            print(render_row(row_str))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [↑/k] 上移  [↓/j] 下移  [Enter] 确认  [1-2/0] 直达  [b/q] 返回", "center"))
+        print(render_box_line("└", "─", "┘"))
+        
+        k = getkey()
+        if k in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+            sub_idx = (sub_idx - 1) % len(file_opts)
+        elif k in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+            sub_idx = (sub_idx + 1) % len(file_opts)
+        elif k in ('1', '2'):
+            sub_idx = int(k) - 1
+            execute_file_action(file_opts[sub_idx][1])
+        elif k == '0' or k in ('b', 'q', 'esc'):
+            break
+        elif k in ('enter', 'space', '\r', '\n'):
+            if file_opts[sub_idx][1] == 'back':
+                break
+            execute_file_action(file_opts[sub_idx][1])
+
+def execute_login_action(action):
+    os.system('cls' if os.name == 'nt' else 'clear')
+    if action == 'auto':
+        cmd_login_auto()
+    elif action == 'cred':
+        cmd_login(DummyArgs(auto=False, cookie=None, username=None, password=None, code=None))
+    elif action == 'manual':
+        print(f"{C_BOLD}请输入从浏览器获取的 Cookie 字符串：{C_RESET}")
+        try:
+            c_str = input(f"{C_CYAN}Cookie > {C_RESET}").strip()
+            if c_str:
+                res = login_with_cookie(c_str)
+                if res["success"]:
+                    log_success(res["message"])
+                else:
+                    log_error(res["error"])
+        except (KeyboardInterrupt, EOFError):
+            pass
+    elif action == 'test':
+        check_login_status(verbose=True)
+    elif action == 'logout':
+        cmd_logout()
+    print(f"\n{C_CYAN}按任意键返回登录菜单...{C_RESET}")
+    getkey()
+
+def tui_login_menu():
+    sub_opts = [
+        ("自动从本机浏览器读取 Cookie (推荐，支持 Safari / Firefox / Chrome / Edge)", "auto"),
+        ("账号密码 + 验证码登录 (自动拉取并弹出验证码，输入后直接登录)", "cred"),
+        ("手动粘贴导入 Cookie 字符串", "manual"),
+        ("测试与验证当前登录状态", "test"),
+        ("清除本地登录凭据 (安全退出登录)", "logout"),
+        ("返回主菜单", "back")
+    ]
+    sub_idx = 0
+    while True:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        session = load_session()
+        has_sess = bool(session.get("sessionid"))
+        sess_str = f"{C_GREEN}● 已配置 (Session Ready){C_RESET}" if has_sess else f"{C_YELLOW}○ 未配置 (No Session){C_RESET}"
+        
+        print(render_box_line("┌", "─", "┐"))
+        print(render_row(f"{C_CYAN}{C_BOLD}🔐 春晖校园网登录与凭据中心{C_RESET}", "center"))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_BOLD}[系统节点]{C_RESET} 10.181.200.3    {C_BOLD}[当前凭据]{C_RESET} {sess_str}"))
+        print(render_box_line("├", "─", "┤"))
+        for idx, (opt_name, _) in enumerate(sub_opts):
+            num_tag = f"[{idx+1}]" if idx < len(sub_opts) - 1 else "[0]"
+            if idx == sub_idx:
+                row_str = f"{C_GREEN}{C_BOLD}▶ {num_tag} {opt_name}{C_RESET}"
+            else:
+                row_str = f"  {C_GREY}{num_tag}{C_RESET} {opt_name}"
+            print(render_row(row_str))
+        print(render_box_line("├", "─", "┤"))
+        print(render_row(f"{C_CYAN}{C_BOLD}[快捷操作]{C_RESET} [↑/k] 上移  [↓/j] 下移  [Enter] 确认  [1-5/0] 直达  [b/q] 返回", "center"))
+        print(render_box_line("└", "─", "┘"))
+        
+        k = getkey()
+        if k in ('up', 'k', 'w', '\x1b[A', '\x1bOA'):
+            sub_idx = (sub_idx - 1) % len(sub_opts)
+        elif k in ('down', 'j', 's', '\x1b[B', '\x1bOB'):
+            sub_idx = (sub_idx + 1) % len(sub_opts)
+        elif k in ('1', '2', '3', '4', '5'):
+            sub_idx = int(k) - 1
+            execute_login_action(sub_opts[sub_idx][1])
+        elif k == '0' or k in ('b', 'q', 'esc'):
+            break
+        elif k in ('enter', 'space', '\r', '\n'):
+            if sub_opts[sub_idx][1] == 'back':
+                break
+            execute_login_action(sub_opts[sub_idx][1])
+
+def tui_status_card():
+    os.system('cls' if os.name == 'nt' else 'clear')
+    session = load_session()
+    has_sess = bool(session.get("sessionid"))
+    sess_str = f"{C_GREEN}● 已配置 (Session Ready){C_RESET}" if has_sess else f"{C_YELLOW}○ 未配置 (No Session){C_RESET}"
+    
+    print(render_box_line("┌", "─", "┐"))
+    print(render_row(f"{C_CYAN}{C_BOLD}ℹ️ 登录状态与系统网络环境{C_RESET}", "center"))
+    print(render_box_line("├", "─", "┤"))
+    print(render_row(f"{C_BOLD}[系统节点]{C_RESET} 10.181.200.3    {C_BOLD}[凭据状态]{C_RESET} {sess_str}"))
+    print(render_row(f"{C_GREY}本地会话存储: {SESSION_FILE}{C_RESET}"))
+    print(render_box_line("├", "─", "┤"))
+    print(render_row("正在向内网服务器发起实时心跳验证..."))
+    print(render_box_line("└", "─", "┘\n"))
+    
+    check_login_status(verbose=True)
+    
+    print(f"\n{C_CYAN}按任意键返回主菜单...{C_RESET}")
+    getkey()
+
+def handle_tui_action(choice):
+    try:
+        if choice == 0:
+            tui_login_menu()
+        elif choice == 1:
+            tui_status_card()
+        elif choice == 2:
+            tui_schedule_interactive()
+        elif choice == 3:
+            tui_messages_paginated()
+        elif choice == 4:
+            tui_hygiene_paginated()
+        elif choice == 5:
+            tui_duty_interactive()
+        elif choice == 6:
+            tui_news_interactive()
+        elif choice == 7:
+            tui_bedroom_interactive()
+        elif choice == 8:
+            tui_lostfound_paginated()
+        elif choice == 9:
+            tui_file_interactive()
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
         log_error(f"TUI 操作执行出错: {e}")
-    
-    print("\n按任意键返回主菜单...")
-    getkey()
+        print("\n按任意键返回主菜单...")
+        getkey()
 
 def run_tui():
     if not sys.stdin.isatty():
@@ -2324,6 +3472,7 @@ def main():
 
     # login command
     parser_login = subparsers.add_parser("login", help="校园网账号密码或 Cookie 登录")
+    parser_login.add_argument("--auto", action="store_true", help="自动从本机浏览器获取并同步 Cookie")
     parser_login.add_argument("--cookie", type=str, help="直接指定 Cookie 字符串")
     parser_login.add_argument("-u", "--username", type=str, help="登录用户名/学号")
     parser_login.add_argument("-p", "--password", type=str, help="登录密码")
