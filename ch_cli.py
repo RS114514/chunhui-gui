@@ -24,6 +24,9 @@ from html.parser import HTMLParser
 BASE_URL = "http://10.181.200.3"
 SESSION_FILE = os.path.expanduser("~/.ch_cli_session.json")
 
+# 统一设置 Socket 超时为 4 秒，防止离线/无路由时系统级 TCP SYN 长时间挂起
+socket.setdefaulttimeout(4)
+
 # Colors
 C_RESET = "\033[0m"
 C_BOLD = "\033[1m"
@@ -49,12 +52,13 @@ def log_error(msg):
 
 def check_intranet_connection(timeout=1.5):
     """
-    通过 HTTP HEAD 请求检测校园内网主站的真实连通性
+    通过 HTTP HEAD 请求检测校园内网主站的真实连通性 (强制直连，绕过本地系统代理)
     """
     try:
         req = urllib.request.Request(f"{BASE_URL}/account/login4Stu/", method="HEAD")
         req.add_header("User-Agent", "Mozilla/5.0")
-        with urllib.request.urlopen(req, timeout=timeout):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout):
             return True
     except urllib.error.HTTPError:
         return True
@@ -183,10 +187,11 @@ def make_request(url_path, method="GET", data=None, headers=None, follow_redirec
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
             
+    proxy_handler = urllib.request.ProxyHandler({})
     if follow_redirects:
-        opener = urllib.request.build_opener()
+        opener = urllib.request.build_opener(proxy_handler)
     else:
-        opener = urllib.request.build_opener(NoRedirectHandler)
+        opener = urllib.request.build_opener(proxy_handler, NoRedirectHandler)
         
     max_retries = 2
     for attempt in range(max_retries):
@@ -194,7 +199,7 @@ def make_request(url_path, method="GET", data=None, headers=None, follow_redirec
         for k, v in headers.items():
             req.add_header(k, v)
         try:
-            with opener.open(req, timeout=5) as resp:
+            with opener.open(req, timeout=3) as resp:
                 return resp.status, resp.read(), resp.info()
         except urllib.error.HTTPError as e:
             if e.code in (502, 504) and attempt < max_retries - 1:
@@ -905,134 +910,664 @@ def cmd_schedule(args):
         parse_teachers_and_display(html_content)
     except Exception as e:
         log_error(f"解析课表数据矩阵失败: {e}")
+# ======================================================================
+# 结构化数据接口 (供 CLI 终端交互与外部客户端 GUI 统一调用)
+# ======================================================================
 
-def cmd_messages(args):
-    if args.show:
-        msg_id = args.show
-        log_info(f"正在查询消息详情 [ID: {msg_id}]...")
-        status, body, _ = make_request(f"/sitemessage/show-Message/{msg_id}/", method="GET")
-        if status != 200:
-            log_error(f"获取消息详情失败 (HTTP Code: {status})")
-            return
-        html_content = body.decode("utf-8", errors="ignore")
-        
-        title = "无标题"
-        title_m = re.search(r'<div class="ArticleTitle">(.*?)</div>', html_content, re.DOTALL)
-        if title_m:
-            title = clean_html(title_m.group(1))
-            
-        sender = "未知"
-        sender_m = re.search(r'发送者：\s*([^\s<]+)', html_content)
-        if sender_m:
-            sender = sender_m.group(1).strip()
-            
-        send_time = "未知"
-        time_m = re.search(r'发送时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
-        if time_m:
-            send_time = time_m.group(1).strip()
-            
-        content = ""
-        content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>\s*</div>', html_content, re.DOTALL)
-        if content_m:
-            content = render_html_content(content_m.group(1))
-        else:
-            content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
-            if content_m:
-                content = render_html_content(content_m.group(1))
-                
-        recipients_all = "无"
-        rec1_m = re.search(r'id="multiCollapseExample1">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
-        if rec1_m:
-            recipients_all = clean_html(rec1_m.group(1))
-            
-        recipients_unread = "无"
-        rec2_m = re.search(r'id="multiCollapseExample2">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
-        if rec2_m:
-            recipients_unread = clean_html(rec2_m.group(1))
-            
-        # 提取附件超链接
-        attachment_links = []
-        links = re.findall(r'href=["\'](.*?)["\']', html_content)
-        for link in links:
-            link_clean = link.strip()
-            if not link_clean or link_clean == "#" or "javascript:" in link_clean:
-                continue
-            lower_link = link_clean.lower()
-            is_file = any(ext in lower_link for ext in ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.png', '.jpg', '.txt', '.mp4'])
-            if is_file or "/fileaccess/" in link_clean:
-                if "Logo" in link_clean or "newFunc" in link_clean or "sydw" in link_clean:
-                    continue
-                full_url = link_clean
-                if not link_clean.startswith("http"):
-                    if link_clean.startswith("/"):
-                        full_url = f"{BASE_URL}{link_clean}"
-                    else:
-                        full_url = f"{BASE_URL}/{link_clean}"
-                if full_url not in attachment_links:
-                    attachment_links.append(full_url)
-            
-        print(f"\n{C_BOLD}{C_GREEN}消息详情 {C_RESET}")
-        print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
-        print(f"{C_BOLD}标题：{C_RESET} {C_YELLOW}{title}{C_RESET}")
-        print(f"{C_BOLD}发送者：{C_RESET} {C_CYAN}{sender}{C_RESET}    |    {C_BOLD}时间：{C_RESET} {C_GREY}{send_time}{C_RESET}")
-        print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
-        print(f"{content}")
-        print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
-        print(f"{C_BOLD}全体收件人：{C_RESET} {recipients_all}")
-        print(f"{C_BOLD}未阅收件人：{C_RESET} {C_RED}{recipients_unread}{C_RESET}")
-        print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
-        
-        if attachment_links:
-            print(f"{C_BOLD}{C_GREEN}关联附件列表：{C_RESET}")
-            for i, att_url in enumerate(attachment_links):
-                filename = att_url.split('/')[-1].split('?')[0]
-                filename = urllib.parse.unquote(filename)
-                print(f"  [{i+1}] {C_YELLOW}{filename}{C_RESET}")
-                print(f"      链接: {C_CYAN}{att_url}{C_RESET}")
-            print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
-            
-        if args.download:
-            download_attachments(attachment_links, args.out)
-            print()
-        return
-
-    page = args.page or 1
-    log_info(f"正在获取收件箱消息列表 (第 {page} 页)...")
+def fetch_messages(page=1):
+    """获取收件箱信件列表"""
     url = f"/sitemessage/message-Receive-list/?page={page}"
     status, body, _ = make_request(url, method="GET")
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status == 302:
+        return {"success": False, "need_login": True, "error": "尚未登录或登录已失效，请先登录校园网账号"}
     if status != 200:
-        log_error(f"获取收件箱列表失败 (HTTP Code: {status})")
-        return
+        return {"success": False, "error": f"获取收件箱列表失败 (HTTP {status})"}
         
     html_content = body.decode("utf-8", errors="ignore")
-    
+    if "login4Stu" in html_content and "show-Message" not in html_content:
+        return {"success": False, "need_login": True, "error": "尚未登录或登录已失效，请先登录校园网账号"}
+        
     tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
     trs = tr_pattern.findall(html_content)
-    
     rows = []
     for tr in trs:
-        if "show-Message" in tr:
+        if "show-Message" in tr or "del_siteMessage" in tr:
             id_m = re.search(r'/sitemessage/show-Message/(\d+)/\s*', tr)
             msg_id = id_m.group(1) if id_m else ""
             if not msg_id:
                 id_m = re.search(r'del_siteMessage\(this,(\d+)\)', tr)
                 if id_m:
                     msg_id = id_m.group(1)
-            
             tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-            if len(tds) >= 3:
+            title = ""
+            sender = ""
+            date = ""
+            title_idx = -1
+            for idx, td in enumerate(tds):
+                if "show-Message" in td:
+                    title_idx = idx
+                    title = clean_html(td)
+                    break
+            if title_idx != -1:
+                if title_idx + 1 < len(tds):
+                    sender = clean_html(tds[title_idx + 1])
+                if title_idx + 2 < len(tds):
+                    date = clean_html(tds[title_idx + 2])
+            elif len(tds) >= 3:
                 title = clean_html(tds[1])
                 sender = clean_html(tds[2])
                 date = clean_html(tds[3]) if len(tds) > 3 else ""
-                rows.append([msg_id, title, sender, date])
+            is_unread = ("未阅" in tr or "未读" in tr or "font-weight" in tr or "red" in tr)
+            rows.append({
+                "id": msg_id,
+                "title": title,
+                "sender": sender,
+                "time": date,
+                "date": date,
+                "unread": is_unread
+            })
+    return {"success": True, "data": rows, "page": page}
+
+def fetch_message_detail(msg_id):
+    """获取指定收件箱信件正文与附件"""
+    status, body, _ = make_request(f"/sitemessage/show-Message/{msg_id}/", method="GET")
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status == 302:
+        return {"success": False, "need_login": True, "error": "尚未登录或登录已失效，请先登录校园网账号"}
+    if status != 200:
+        return {"success": False, "error": f"获取信件详情失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    
+    title = "无标题"
+    title_m = re.search(r'<div class="ArticleTitle">(.*?)</div>', html_content, re.DOTALL)
+    if title_m:
+        title = clean_html(title_m.group(1))
+        
+    sender = "未知"
+    sender_m = re.search(r'发送者：\s*([^\s<]+)', html_content)
+    if sender_m:
+        sender = sender_m.group(1).strip()
+        
+    send_time = "未知"
+    time_m = re.search(r'发送时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
+    if time_m:
+        send_time = time_m.group(1).strip()
+        
+    content = ""
+    content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>\s*</div>', html_content, re.DOTALL)
+    if not content_m:
+        content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
+    if content_m:
+        content = render_html_content(content_m.group(1))
+            
+    recipients_all = "无"
+    rec1_m = re.search(r'id="multiCollapseExample1">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
+    if rec1_m:
+        recipients_all = clean_html(rec1_m.group(1))
+        
+    recipients_unread = "无"
+    rec2_m = re.search(r'id="multiCollapseExample2">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
+    if rec2_m:
+        recipients_unread = clean_html(rec2_m.group(1))
+        
+    attachment_links = extract_attachment_links(html_content)
+    attachments = []
+    for att_url in attachment_links:
+        fname = urllib.parse.unquote(att_url.split('/')[-1].split('?')[0])
+        attachments.append({"name": fname, "url": att_url})
+        
+    return {
+        "success": True,
+        "data": {
+            "id": str(msg_id),
+            "title": title,
+            "sender": sender,
+            "time": send_time,
+            "content": content,
+            "recipients_all": recipients_all,
+            "recipients_unread": recipients_unread,
+            "attachments": attachments
+        }
+    }
+
+def fetch_news(column="16", page=1):
+    """获取校内公告与资讯列表 (16=通知公告, 13=新闻聚焦, 19=校内公示, 51=值周小结)"""
+    col_mapping = {
+        "news": "13",
+        "notice": "19",
+        "announcement": "16",
+        "duty": "51"
+    }
+    col_id = col_mapping.get(str(column), str(column))
+    status, body, _ = make_request(f"/article/column-detail/{col_id}/?page={page}", method="GET", follow_redirects=True)
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"获取资讯列表失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    items = re.findall(r'href=["\']/article/article-detail/(\d+)/["\'][^>]*>\s*(.*?)\s*</a>.*?class="[^"]*text-secondary"[^>]*>\s*(.*?)\s*</div>', html_content, re.DOTALL)
+    if not items:
+        items = re.findall(r'<div class="ArticleTitle">\s*<a href="/article/article-detail/(\d+)/"[^>]*>(.*?)</a>\s*</div>.*?<div class="ArticleTime">(.*?)</div>', html_content, re.DOTALL)
+    rows = []
+    for art_id, title, date in items:
+        rows.append({
+            "id": art_id,
+            "title": clean_html(title),
+            "date": clean_html(date)
+        })
+    return {"success": True, "data": rows, "page": page, "column": col_id}
+
+def fetch_news_detail(article_id):
+    """获取校内资讯与文章详情正文及附件"""
+    status, body, _ = make_request(f"/article/article-detail/{article_id}/", method="GET", follow_redirects=True)
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"获取文章详情失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    
+    title = "无标题"
+    title_m = re.search(r'<div class="ArticleTitle[^>]*>(.*?)</div>', html_content, re.DOTALL)
+    if title_m:
+        title = clean_html(title_m.group(1))
+        
+    source = "未知"
+    source_m = re.search(r'来源：\s*([^<]+)', html_content)
+    if source_m:
+        source = clean_html(source_m.group(1))
+        
+    pub_time = "未知"
+    time_m = re.search(r'发布时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
+    if time_m:
+        pub_time = time_m.group(1).strip()
+        
+    content = ""
+    content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
+    if content_m:
+        content = render_html_content(content_m.group(1))
+        
+    attachment_links = extract_attachment_links(html_content)
+    attachments = []
+    for att_url in attachment_links:
+        fname = urllib.parse.unquote(att_url.split('/')[-1].split('?')[0])
+        attachments.append({"name": fname, "url": att_url})
+        
+    return {
+        "success": True,
+        "data": {
+            "id": str(article_id),
+            "title": title,
+            "source": source,
+            "time": pub_time,
+            "content": content,
+            "attachments": attachments
+        }
+    }
+
+def fetch_classes(grade_id):
+    """根据年级ID (1=高一, 2=高二, 3=高三) 获取全部班级列表"""
+    status, body, _ = make_request("/subjectArrangement/getClassFromGradeForSelect/", method="POST", data={"theGradeID": grade_id})
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"获取班级列表失败 (HTTP {status})"}
+    try:
+        classes = json.loads(body.decode("utf-8"))
+        return {"success": True, "data": classes}
+    except Exception as e:
+        return {"success": False, "error": f"解析班级列表异常: {e}"}
+
+def fetch_schedule(grade_id, class_id):
+    """获取指定班级的周课表矩阵和任课教师列表"""
+    data_post = {
+        "chGradeIDForName": grade_id,
+        "chClassIDForName": class_id
+    }
+    status, body_html, _ = make_request("/subjectArrangement/ClassClassArrangement_JustForView/", method="POST", data=data_post)
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"查询课表失败 (HTTP {status})"}
+    html_content = body_html.decode("utf-8", errors="ignore")
+    match = re.search(r'dataObj\s*=\s*(\[\[.*?\]\])\s*;', html_content)
+    if not match:
+        return {"success": False, "error": "页面中未找到课表数据矩阵 (可能未排课)"}
+    try:
+        data_obj = json.loads(match.group(1))
+    except Exception as e:
+        return {"success": False, "error": f"解析课表矩阵异常: {e}"}
+        
+    main_manager = "未知"
+    sub_manager = "未知"
+    m1 = re.search(r'班主任：\s*([^\s<]+)', html_content)
+    if m1:
+        main_manager = m1.group(1).strip()
+    m2 = re.search(r'副班主任：\s*([^\s<]+)', html_content)
+    if m2:
+        sub_manager = m2.group(1).strip()
+        
+    teachers = []
+    tm = re.search(r'id="ClassSubjectTeacher"[^>]*>(.*?)</div>\s*</div>', html_content, re.DOTALL)
+    if tm:
+        uls = re.findall(r'<ul>(.*?)</ul>', tm.group(1), re.DOTALL)
+        for ul in uls:
+            clean = re.sub(r'<[^>]+>', '', ul).strip()
+            clean = re.sub(r'\s+', ' ', clean)
+            if clean:
+                teachers.append(clean)
                 
+    return {
+        "success": True,
+        "data": {
+            "matrix": data_obj,
+            "main_manager": main_manager,
+            "sub_manager": sub_manager,
+            "teachers": teachers
+        }
+    }
+
+def fetch_hygiene(page=1):
+    """获取常规纪律卫生检查记录列表"""
+    url = f"/classappraise/hygienePictures_receive_list/?page={page}"
+    status, body, _ = make_request(url, method="GET")
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"获取考评记录失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
+    trs = tr_pattern.findall(html_content)
+    rows = []
+    for tr in trs:
+        if "show-Message" in tr:
+            id_m = re.search(r'/classappraise/show-Message/(\d+)/\s*', tr)
+            rec_id = id_m.group(1) if id_m else ""
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+            if len(tds) >= 4:
+                location = clean_html(tds[1])
+                desc = clean_html(tds[2])
+                date = clean_html(tds[3])
+                rows.append({"id": rec_id, "location": location, "desc": desc, "date": date})
+    return {"success": True, "data": rows, "page": page}
+
+def fetch_hygiene_detail(record_id):
+    """获取考评多媒体现场记录及通报情况"""
+    status, body, _ = make_request(f"/classappraise/show-Message/{record_id}/", method="GET")
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"获取考评详情失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    desc = "未知违纪描述"
+    m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
+    if m:
+        desc = render_html_content(m.group(1))
+    media_urls = []
+    for img in re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_content):
+        if not any(k in img for k in ("Logo", "newFunc", "sydw")):
+            full = img if img.startswith("http") else f"{BASE_URL}{img}" if img.startswith("/") else f"{BASE_URL}/{img}"
+            if full not in [item["url"] for item in media_urls]:
+                media_urls.append({"type": "image", "url": full})
+    for vid in re.findall(r'<video[^>]+src=["\'](.*?)["\']', html_content):
+        full = vid if vid.startswith("http") else f"{BASE_URL}{vid}" if vid.startswith("/") else f"{BASE_URL}/{vid}"
+        if full not in [item["url"] for item in media_urls]:
+            media_urls.append({"type": "video", "url": full})
+    recipients_all = "无"
+    m = re.search(r'id="multiCollapseExample1">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
+    if m:
+        recipients_all = clean_html(m.group(1))
+    recipients_unread = "无"
+    m = re.search(r'id="multiCollapseExample2">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
+    if m:
+        recipients_unread = clean_html(m.group(1))
+    return {
+        "success": True,
+        "data": {
+            "id": str(record_id),
+            "desc": desc,
+            "media_urls": media_urls,
+            "recipients_all": recipients_all,
+            "recipients_unread": recipients_unread
+        }
+    }
+
+def fetch_dorm_hygiene(dorm="1", start="", end="", show_all=False):
+    """查询宿舍楼宇考评扣分总表 (dorm 1~9 对应 3号楼~11号楼)"""
+    dorm_id, dorm_name = resolve_dorm(dorm)
+    if not start:
+        start = time.strftime("%Y-%m-%d", time.localtime(time.time() - 30 * 86400))
+    if not end:
+        end = time.strftime("%Y-%m-%d")
+    post_data = {
+        "chDormitoryForName": dorm_id,
+        "theBeginDateForName": start,
+        "theEndDateForName": end
+    }
+    status, body, _ = make_request("/classappraise/BedRoom_DisciplineHygiene_JustForView/", method="POST", data=post_data)
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"查询宿舍考评失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
+    trs = tr_pattern.findall(html_content)
+    rows = []
+    for tr in trs:
+        tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+        if len(tds) >= 4:
+            room = clean_html(tds[0])
+            cls_name = clean_html(tds[1])
+            hyg = clean_html(tds[2])
+            disc = clean_html(tds[3])
+            total = clean_html(tds[4]) if len(tds) > 4 else ""
+            if not show_all and (not total or total.strip() in ("", "0")):
+                continue
+            rows.append({
+                "room": room,
+                "class": cls_name,
+                "hygiene": hyg or "-",
+                "discipline": disc or "-",
+                "total": total or "-"
+            })
+    return {"success": True, "data": rows, "dorm": dorm_id, "dorm_name": dorm_name, "start": start, "end": end}
+
+def fetch_dorm_class(grade_id, class_name):
+    """查询班级寝室分配对应"""
+    res = find_class_id(int(grade_id), class_name)
+    if not res:
+        return {"success": False, "error": f"在所选年级中未找到班级: {class_name}"}
+    class_id, resolved_name = res
+    post_data = {
+        "chGradeIDForName": grade_id,
+        "chClassIDForName": class_id
+    }
+    status, body, _ = make_request("/classappraise/QueryBedroomsByClassID_JustForView/", method="POST", data=post_data)
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"查询班级寝室失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    m = re.search(r'class="alert alert-primary"[^>]*>\s*(.*?)\s*</div>', html_content, re.DOTALL)
+    if m:
+        info = clean_html(m.group(1))
+        return {"success": True, "class_name": resolved_name, "info": info}
+    return {"success": True, "class_name": resolved_name, "info": "该班级暂未登记寝室分配数据"}
+
+def fetch_duty():
+    """获取教师行政值周周次排班总表"""
+    status, body, _ = make_request("/classappraise/TeacherDutyWeek_JustForView/", method="GET")
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"获取值周安排失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    blocks = re.findall(r'<ul class="list-group"\s*>(.*?)</ul>', html_content, re.DOTALL)
+    duties = []
+    for block in blocks:
+        is_current = "list-group-item-success" in block
+        lis = re.findall(r'<li[^>]*>(.*?)</li>', block, re.DOTALL)
+        if not lis:
+            continue
+        week_name = re.sub(r'<[^>]+>', '', lis[0]).strip()
+        date_range = re.sub(r'<[^>]+>', '', lis[1]).strip() if len(lis) > 1 else ""
+        details = {}
+        for li in lis[2:]:
+            clean = re.sub(r'<[^>]+>', '', li).strip()
+            if "：" in clean:
+                k, v = clean.split("：", 1)
+                details[k.strip()] = v.strip()
+        duties.append({
+            "is_current": is_current,
+            "week": week_name,
+            "date": date_range,
+            "admin": details.get("行政值周", ""),
+            "group1": details.get("第一小组", ""),
+            "group2": details.get("第二小组", ""),
+            "group3": details.get("第三小组", ""),
+            "duty_class": details.get("值周班级", ""),
+            "talk": details.get("旗下讲话", "")
+        })
+    return {"success": True, "data": duties}
+
+def fetch_lostfound(page=1):
+    """获取失物招领列表"""
+    status, body, _ = make_request(f"/lostAndFound/lostAndFoundList/?page={page}", method="GET", follow_redirects=True)
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"获取失物招领列表失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
+    trs = tr_pattern.findall(html_content)
+    rows = []
+    for tr in trs:
+        tds = re.findall(r'<(?:td|th)[^>]*>(.*?)</(?:td|th)>', tr, re.DOTALL)
+        if len(tds) >= 8 and "类别" not in tds[1]:
+            lf_id = ""
+            id_m = re.search(r'href=["\']/lostAndFound/lostAndFoundDetail/(\d+)/["\']', tds[2])
+            if id_m:
+                lf_id = id_m.group(1)
+            category = clean_html(tds[1])
+            title = clean_html(tds[2])
+            reporter = clean_html(tds[3])
+            start_date = clean_html(tds[6])
+            status_text = clean_html(tds[8]) if len(tds) > 8 else ""
+            rows.append({
+                "id": lf_id,
+                "category": category,
+                "title": title,
+                "reporter": reporter,
+                "date": start_date,
+                "status": status_text
+            })
+    return {"success": True, "data": rows, "page": page}
+
+def fetch_lostfound_detail(item_id):
+    """获取失物招领详细说明与认领联系方式"""
+    status, body, _ = make_request(f"/lostAndFound/lostAndFoundDetail/{item_id}/", method="GET", follow_redirects=True)
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"获取招领详情失败 (HTTP {status})"}
+    html_content = body.decode("utf-8", errors="ignore")
+    title = "无标题"
+    m = re.search(r'<div class="ArticleTitle[^>]*>(.*?)</div>', html_content, re.DOTALL)
+    if m:
+        title = clean_html(m.group(1))
+    reporter = "未知"
+    m = re.search(r'来源：\s*([^<]+)', html_content)
+    if m:
+        reporter = clean_html(m.group(1))
+    reviewer = "未知"
+    m = re.search(r'审核人：\s*([^<]+)', html_content)
+    if m:
+        reviewer = clean_html(m.group(1))
+    pub_time = "未知"
+    m = re.search(r'发布时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
+    if m:
+        pub_time = m.group(1).strip()
+    content = ""
+    m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
+    if m:
+        content = render_html_content(m.group(1))
+    media_urls = []
+    for img in re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_content):
+        if "Logo" not in img and "newFunc" not in img and "sydw" not in img:
+            full = img if img.startswith("http") else f"{BASE_URL}{img}" if img.startswith("/") else f"{BASE_URL}/{img}"
+            if full not in media_urls:
+                media_urls.append(full)
+    for vid in re.findall(r'<video[^>]+src=["\'](.*?)["\']', html_content):
+        full = vid if vid.startswith("http") else f"{BASE_URL}{vid}" if vid.startswith("/") else f"{BASE_URL}/{vid}"
+        if full not in media_urls:
+            media_urls.append(full)
+    for link in extract_attachment_links(html_content):
+        if link not in media_urls:
+            media_urls.append(link)
+    attachments = []
+    for u in media_urls:
+        fn = urllib.parse.unquote(u.split('/')[-1].split('?')[0])
+        attachments.append({"name": fn, "url": u})
+    return {
+        "success": True,
+        "data": {
+            "id": str(item_id),
+            "title": title,
+            "reporter": reporter,
+            "reviewer": reviewer,
+            "time": pub_time,
+            "content": content,
+            "media_urls": media_urls,
+            "attachments": attachments
+        }
+    }
+
+def upload_file_chunked(file_path, progress_callback=None):
+    """100MB 逻辑分片上传并返回提取密码"""
+    if not os.path.exists(file_path):
+        return {"success": False, "error": f"本地文件不存在: {file_path}"}
+    if not os.path.isfile(file_path):
+        return {"success": False, "error": f"指定路径不是文件: {file_path}"}
+    session = load_session()
+    if not session.get("sessionid"):
+        return {"success": False, "need_login": True, "error": "文件上传需要校园网账号认证，请先登录"}
+        
+    filename = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
+    chunk_size = 100 * 1024 * 1024
+    total_chunks = (file_size + chunk_size - 1) // chunk_size
+    if total_chunks == 0:
+        total_chunks = 1
+        
+    task_id = f"WU_FILE_{uuid.uuid4().hex}"
+    try:
+        with open(file_path, "rb") as f:
+            for chunk_idx in range(total_chunks):
+                chunk_data = f.read(chunk_size)
+                if progress_callback:
+                    progress_callback(chunk_idx + 1, total_chunks, len(chunk_data))
+                fields = {
+                    "id": "WU_FILE_0",
+                    "name": filename,
+                    "type": "application/octet-stream",
+                    "lastModifiedDate": time.strftime("%a %b %d %Y %H:%M:%S GMT+0800"),
+                    "size": str(file_size),
+                    "chunks": str(total_chunks),
+                    "chunk": str(chunk_idx),
+                    "task_id": task_id
+                }
+                files = {
+                    "file": (filename, "application/octet-stream", chunk_data)
+                }
+                content_type, body = encode_multipart_formdata(fields, files)
+                headers = {
+                    "Content-Type": content_type,
+                    "Content-Length": str(len(body))
+                }
+                status, resp_body, _ = make_request("/fileaccess/files_upload/", method="POST", data=body, headers=headers)
+                if status == 0:
+                    return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+                if status != 200:
+                    return {"success": False, "error": f"分片 {chunk_idx + 1}/{total_chunks} 上传失败 (HTTP {status})"}
+    except Exception as e:
+        return {"success": False, "error": f"读取或发送分片文件失败: {e}"}
+        
+    complete_data = {
+        "task_id": task_id,
+        "filename": filename
+    }
+    status_c, resp_c, _ = make_request("/fileaccess/upload_complete/", method="POST", data=complete_data)
+    if status_c == 200:
+        password = resp_c.decode("utf-8", errors="ignore").strip()
+        password = clean_html(password)
+        return {"success": True, "code": password, "filename": filename}
+    return {"success": False, "error": f"合并文件请求失败 (HTTP {status_c})"}
+
+def fetch_access_file(code):
+    """查询 6 位提取码对应的远端文件信息"""
+    code = (code or "").strip()
+    if len(code) != 6 or not code.isdigit():
+        return {"success": False, "error": "请输入有效的 6 位数字取件密码"}
+    post_data = {"thePasswordTheUserEntered": code}
+    status, body, _ = make_request("/fileaccess/get-AccessFile/", method="POST", data=post_data)
+    if status == 0:
+        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
+    if status != 200:
+        return {"success": False, "error": f"查询提取码失败 (HTTP {status})"}
+    try:
+        res_json = json.loads(body.decode("utf-8"))
+        if res_json.get("error") != "0":
+            return {"success": False, "error": res_json.get("msg", "提取码不存在、错误或文件已过期")}
+        file_path_name = res_json.get("filePathName")
+        file_name = res_json.get("fileNameForDisplay")
+        if not file_path_name or not file_name:
+            return {"success": False, "error": "服务端返回的文件信息不完整"}
+        download_url = f"{BASE_URL}/static/fileaccess/{file_path_name}"
+        return {
+            "success": True,
+            "filename": file_name,
+            "download_url": download_url,
+            "code": code
+        }
+    except Exception as e:
+        return {"success": False, "error": f"解析提取信息异常: {e}"}
+
+# ======================================================================
+# CLI 命令实现
+# ======================================================================
+
+def cmd_messages(args):
+    if args.show:
+        msg_id = args.show
+        log_info(f"正在查询消息详情 [ID: {msg_id}]...")
+        res = fetch_message_detail(msg_id)
+        if not res.get("success"):
+            log_error(res.get("error"))
+            return
+        d = res["data"]
+        print(f"\n{C_BOLD}{C_GREEN}消息详情 {C_RESET}")
+        print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
+        print(f"{C_BOLD}标题：{C_RESET} {C_YELLOW}{d['title']}{C_RESET}")
+        print(f"{C_BOLD}发送者：{C_RESET} {C_CYAN}{d['sender']}{C_RESET}    |    {C_BOLD}时间：{C_RESET} {C_GREY}{d['time']}{C_RESET}")
+        print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
+        print(f"{d['content']}")
+        print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
+        print(f"{C_BOLD}全体收件人：{C_RESET} {d['recipients_all']}")
+        print(f"{C_BOLD}未阅收件人：{C_RESET} {C_RED}{d['recipients_unread']}{C_RESET}")
+        print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
+        
+        att_links = [a["url"] for a in d.get("attachments", [])]
+        if att_links:
+            print(f"{C_BOLD}{C_GREEN}关联附件列表：{C_RESET}")
+            for i, a in enumerate(d["attachments"]):
+                print(f"  [{i+1}] {C_YELLOW}{a['name']}{C_RESET}")
+                print(f"      链接: {C_CYAN}{a['url']}{C_RESET}")
+            print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
+            
+        if args.download:
+            download_attachments(att_links, args.out)
+            print()
+        return
+
+    page = args.page or 1
+    log_info(f"正在获取收件箱消息列表 (第 {page} 页)...")
+    res = fetch_messages(page)
+    if not res.get("success"):
+        log_error(res.get("error"))
+        return
+    rows = res.get("data", [])
     if not rows:
         log_warn("没有找到任何消息记录。")
         return
         
     print(f"\n{C_BOLD}{C_GREEN}收件箱列表 (第 {page} 页) ==={C_RESET}")
     for row in rows:
-        msg_id, title, sender, date = row
+        msg_id = row["id"]
+        title = row["title"]
+        sender = row["sender"]
+        date = row["time"]
         print(f"[{C_GREEN}{msg_id}{C_RESET}] {C_BOLD}{title}{C_RESET}")
         print(f"      发送人: {C_CYAN}{sender}{C_RESET}  |  时间: {C_GREY}{date}{C_RESET}")
         print(f"      {C_BLUE}┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄{C_RESET}")
@@ -1274,118 +1809,41 @@ def cmd_file_upload(file_path):
     if not os.path.isfile(file_path):
         log_error(f"指定路径不是文件: {file_path}")
         return
-        
     filename = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
-    
-    chunk_size = 100 * 1024 * 1024
-    total_chunks = (file_size + chunk_size - 1) // chunk_size
-    if total_chunks == 0:
-        total_chunks = 1
-        
-    task_id = f"WU_FILE_{uuid.uuid4().hex}"
-    log_info(f"正在准备分片上传文件: {filename} (大小: {file_size} 字节, 共 {total_chunks} 个分片)")
-    
-    try:
-        with open(file_path, "rb") as f:
-            for chunk_idx in range(total_chunks):
-                chunk_data = f.read(chunk_size)
-                
-                fields = {
-                    "id": "WU_FILE_0",
-                    "name": filename,
-                    "type": "application/octet-stream",
-                    "lastModifiedDate": time.strftime("%a %b %d %Y %H:%M:%S GMT+0800"),
-                    "size": str(file_size),
-                    "chunks": str(total_chunks),
-                    "chunk": str(chunk_idx),
-                    "task_id": task_id
-                }
-                
-                files = {
-                    "file": (filename, "application/octet-stream", chunk_data)
-                }
-                
-                content_type, body = encode_multipart_formdata(fields, files)
-                
-                headers = {
-                    "Content-Type": content_type,
-                    "Content-Length": str(len(body))
-                }
-                
-                log_info(f"正在上传分片 {chunk_idx + 1}/{total_chunks} ({len(chunk_data)} 字节)...")
-                
-                status, resp_body, _ = make_request("/fileaccess/files_upload/", method="POST", data=body, headers=headers)
-                if status != 200:
-                    log_error(f"分片 {chunk_idx + 1} 上传失败 (HTTP Code: {status})")
-                    return
-    except Exception as e:
-        log_error(f"读取或发送分片文件失败: {e}")
+    log_info(f"正在准备分片上传文件: {filename} (大小: {file_size} 字节)...")
+    def on_prog(chunk_idx, total_chunks, chunk_bytes):
+        log_info(f"正在上传分片 {chunk_idx}/{total_chunks} ({chunk_bytes} 字节)...")
+    res = upload_file_chunked(file_path, progress_callback=on_prog)
+    if not res.get("success"):
+        log_error(res.get("error"))
         return
-                
-    log_info("所有分片上传完毕，正在向服务器请求合并文件...")
-    
-    complete_data = {
-        "task_id": task_id,
-        "filename": filename
-    }
-    status_c, resp_c, _ = make_request("/fileaccess/upload_complete/", method="POST", data=complete_data)
-    if status_c == 200:
-        password = resp_c.decode("utf-8", errors="ignore").strip()
-        password = clean_html(password)
-        log_success(f"文件上传并合并成功！")
-        print(f"\n{C_BOLD}文件提取密码：{C_RESET} {C_YELLOW}{C_BOLD}{password}{C_RESET}")
-        print(f"{C_GREY}提示: 接收方可通过运行 `python3 ch_cli.py file download {password}` 来提取该文件。{C_RESET}\n")
-    else:
-        log_error(f"合并文件请求失败 (HTTP Code: {status_c})")
+    log_success("文件上传并合并成功！")
+    print(f"\n{C_BOLD}文件提取密码：{C_RESET} {C_YELLOW}{C_BOLD}{res['code']}{C_RESET}")
+    print(f"{C_GREY}提示: 接收方可通过运行 `python3 ch_cli.py file download {res['code']}` 来提取该文件。{C_RESET}\n")
 
 def cmd_file_download(password, out_dir="."):
     log_info(f"正在查询提取码 [{password}] 对应文件信息...")
-    post_data = {
-        "thePasswordTheUserEntered": password
-    }
-    status, body, _ = make_request("/fileaccess/get-AccessFile/", method="POST", data=post_data)
-    if status != 200:
-        log_error(f"查询提取码失败 (HTTP Code: {status})")
+    res = fetch_access_file(password)
+    if not res.get("success"):
+        log_error(res.get("error"))
         return
-        
-    try:
-        res_json = json.loads(body.decode("utf-8"))
-        if res_json.get("error") != "0":
-            err_msg = res_json.get("msg", "提取码不存在、错误或文件已过期。")
-            log_error(f"提取失败: {err_msg}")
-            return
-            
-        file_path_name = res_json.get("filePathName")
-        file_name = res_json.get("fileNameForDisplay")
-        
-        if not file_path_name or not file_name:
-            log_error("服务器返回的文件路径或文件名不完整。")
-            return
-            
-        download_url = f"/static/fileaccess/{file_path_name}"
-        file_name = sanitize_output_filename(file_name, "downloaded_file")
-        
-        out_path = out_dir if out_dir else "."
-        if out_path != ".":
-            os.makedirs(out_path, exist_ok=True)
-        target_path = os.path.join(out_path, file_name)
-        
-        log_info(f"匹配到文件: {file_name}，正在拉取数据...")
-        
-        status_dl, body_dl, _ = make_request(download_url, method="GET")
-        if status_dl == 200:
-            try:
-                with open(target_path, "wb") as f_dl:
-                    f_dl.write(body_dl)
-                log_success(f"文件已成功保存至: {target_path} (大小: {len(body_dl)} 字节)")
-            except Exception as e_dl:
-                log_error(f"保存文件 {target_path} 失败: {e_dl}")
-        else:
-            log_error(f"下载文件失败 (HTTP Code: {status_dl})")
-            
-    except Exception as e:
-        log_error(f"解析提取结果异常: {e}")
+    file_name = sanitize_output_filename(res["filename"], "downloaded_file")
+    out_path = out_dir if out_dir else "."
+    if out_path != ".":
+        os.makedirs(out_path, exist_ok=True)
+    target_path = os.path.join(out_path, file_name)
+    log_info(f"匹配到文件: {file_name}，正在拉取数据...")
+    status_dl, body_dl, _ = make_request(res["download_url"], method="GET")
+    if status_dl == 200:
+        try:
+            with open(target_path, "wb") as f_dl:
+                f_dl.write(body_dl)
+            log_success(f"文件已成功保存至: {target_path} (大小: {len(body_dl)} 字节)")
+        except Exception as e_dl:
+            log_error(f"保存文件 {target_path} 失败: {e_dl}")
+    else:
+        log_error(f"下载文件失败 (HTTP Code: {status_dl})")
 
 def cmd_file(args):
     if args.action == "upload":
@@ -1397,84 +1855,49 @@ def cmd_news(args):
     if args.show:
         msg_id = args.show
         log_info(f"正在查询文章详情 [ID: {msg_id}]...")
-        status, body, _ = make_request(f"/article/article-detail/{msg_id}/", method="GET", follow_redirects=True)
-        if status != 200:
-            log_error(f"获取文章详情失败 (HTTP Code: {status})")
+        res = fetch_news_detail(msg_id)
+        if not res.get("success"):
+            log_error(res.get("error"))
             return
-        html_content = body.decode("utf-8", errors="ignore")
-        
-        title = "无标题"
-        title_m = re.search(r'<div class="ArticleTitle[^>]*>(.*?)</div>', html_content, re.DOTALL)
-        if title_m:
-            title = clean_html(title_m.group(1))
-            
-        source = "未知"
-        source_m = re.search(r'来源：\s*([^<]+)', html_content)
-        if source_m:
-            source = clean_html(source_m.group(1))
-            
-        pub_time = "未知"
-        time_m = re.search(r'发布时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
-        if time_m:
-            pub_time = time_m.group(1).strip()
-            
-        content = ""
-        content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
-        if content_m:
-            content = render_html_content(content_m.group(1))
-            
+        d = res["data"]
         print(f"\n{C_BOLD}{C_GREEN}文章详情 {C_RESET}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
-        print(f"{C_BOLD}标题：{C_RESET} {C_YELLOW}{title}{C_RESET}")
-        print(f"{C_BOLD}发布人：{C_RESET} {C_CYAN}{source}{C_RESET}    |    {C_BOLD}时间：{C_RESET} {C_GREY}{pub_time}{C_RESET}")
+        print(f"{C_BOLD}标题：{C_RESET} {C_YELLOW}{d['title']}{C_RESET}")
+        print(f"{C_BOLD}发布人：{C_RESET} {C_CYAN}{d['source']}{C_RESET}    |    {C_BOLD}时间：{C_RESET} {C_GREY}{d['time']}{C_RESET}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
-        print(f"{content}")
+        print(f"{d['content']}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
         
-        attachment_links = extract_attachment_links(html_content)
-        if attachment_links:
+        att_links = [a["url"] for a in d.get("attachments", [])]
+        if att_links:
             print(f"{C_BOLD}{C_GREEN}关联附件列表：{C_RESET}")
-            for i, att_url in enumerate(attachment_links):
-                filename = att_url.split('/')[-1].split('?')[0]
-                filename = urllib.parse.unquote(filename)
-                print(f"  [{i+1}] {C_YELLOW}{filename}{C_RESET}")
-                print(f"      链接: {C_CYAN}{att_url}{C_RESET}")
+            for i, a in enumerate(d["attachments"]):
+                print(f"  [{i+1}] {C_YELLOW}{a['name']}{C_RESET}")
+                print(f"      链接: {C_CYAN}{a['url']}{C_RESET}")
             print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
             
         if args.download:
-            download_attachments(attachment_links, args.out)
+            download_attachments(att_links, args.out)
             print()
         return
 
-    # 栏目映射支持
-    col_mapping = {
-        "news": "13",      # 新闻聚焦
-        "notice": "19",    # 校内公示
-        "announcement": "16", # 通知公告
-        "duty": "51"       # 值周小结
-    }
-    col_id = col_mapping.get(args.column, args.column)
     page = args.page or 1
-    
     log_info(f"正在获取栏目 [{args.column}] 文章列表 (第 {page} 页)...")
-    status, body, _ = make_request(f"/article/column-detail/{col_id}/?page={page}", method="GET", follow_redirects=True)
-    if status != 200:
-        log_error(f"获取文章列表失败 (HTTP Code: {status})")
+    res = fetch_news(args.column, page)
+    if not res.get("success"):
+        log_error(res.get("error"))
         return
-    html_content = body.decode("utf-8", errors="ignore")
-    
-    items = re.findall(r'href=["\']/article/article-detail/(\d+)/["\'][^>]*>\s*(.*?)\s*</a>.*?class="[^"]*text-secondary"[^>]*>\s*(.*?)\s*</div>', html_content, re.DOTALL)
-    if not items:
+        
+    rows = res.get("data", [])
+    if not rows:
         log_warn("没有找到任何文章记录。")
         return
         
-    rows = []
-    for art_id, title, date in items:
-        rows.append([art_id, clean_html(title), clean_html(date)])
-        
     print(f"\n{C_BOLD}{C_GREEN}文章列表 (栏目: {args.column}, 第 {page} 页) ==={C_RESET}")
-    for row in rows:
-        art_id, title, date = row
+    for item in rows:
+        art_id = item["id"]
+        title = item["title"]
+        date = item["date"]
         print(f"[{C_GREEN}{art_id}{C_RESET}] {C_BOLD}{title}{C_RESET}")
         print(f"      发布日期: {C_GREY}{date}{C_RESET}")
         print(f"      {C_BLUE}┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄{C_RESET}")
@@ -1606,68 +2029,21 @@ def cmd_lostfound(args):
     if args.show:
         msg_id = args.show
         log_info(f"正在查询失物招领详情 [ID: {msg_id}]...")
-        status, body, _ = make_request(f"/lostAndFound/lostAndFoundDetail/{msg_id}/", method="GET", follow_redirects=True)
-        if status != 200:
-            log_error(f"获取失物招领详情失败 (HTTP Code: {status})")
+        res = fetch_lostfound_detail(msg_id)
+        if not res.get("success"):
+            log_error(res.get("error"))
             return
-        html_content = body.decode("utf-8", errors="ignore")
-        
-        title = "无标题"
-        title_m = re.search(r'<div class="ArticleTitle[^>]*>(.*?)</div>', html_content, re.DOTALL)
-        if title_m:
-            title = clean_html(title_m.group(1))
-            
-        reporter = "未知"
-        rep_m = re.search(r'来源：\s*([^<]+)', html_content)
-        if rep_m:
-            reporter = clean_html(rep_m.group(1))
-            
-        reviewer = "未知"
-        rev_m = re.search(r'审核人：\s*([^<]+)', html_content)
-        if rev_m:
-            reviewer = clean_html(rev_m.group(1))
-            
-        pub_time = "未知"
-        time_m = re.search(r'发布时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
-        if time_m:
-            pub_time = time_m.group(1).strip()
-            
-        content = ""
-        content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
-        if content_m:
-            content = render_html_content(content_m.group(1))
-            
-        # 提取招领中关联的图片/视频等多媒体
-        media_urls = []
-        imgs = re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_content)
-        for img in imgs:
-            if "Logo" not in img and "newFunc" not in img and "sydw" not in img:
-                if not img.startswith("http") and img.startswith("/"):
-                    media_urls.append(f"{BASE_URL}{img}")
-                else:
-                    media_urls.append(img)
-                    
-        vids = re.findall(r'<video[^>]+src=["\'](.*?)["\']', html_content)
-        for vid in vids:
-            if not vid.startswith("http") and vid.startswith("/"):
-                media_urls.append(f"{BASE_URL}{vid}")
-            else:
-                media_urls.append(vid)
-
-        attachment_links = extract_attachment_links(html_content)
-        for link in attachment_links:
-            if link not in media_urls:
-                media_urls.append(link)
-
+        d = res["data"]
         print(f"\n{C_BOLD}{C_GREEN}失物招领详情 {C_RESET}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
-        print(f"{C_BOLD}物品主题：{C_RESET} {C_YELLOW}{title}{C_RESET}")
-        print(f"{C_BOLD}登记来源：{C_RESET} {C_CYAN}{reporter}{C_RESET}    |    {C_BOLD}时间：{C_RESET} {C_GREY}{pub_time}{C_RESET}")
-        print(f"{C_BOLD}审 核 人：{C_RESET} {reviewer}")
+        print(f"{C_BOLD}物品主题：{C_RESET} {C_YELLOW}{d['title']}{C_RESET}")
+        print(f"{C_BOLD}登记来源：{C_RESET} {C_CYAN}{d['reporter']}{C_RESET}    |    {C_BOLD}时间：{C_RESET} {C_GREY}{d['time']}{C_RESET}")
+        print(f"{C_BOLD}审 核 人：{C_RESET} {d['reviewer']}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
-        print(f"{content}")
+        print(f"{d['content']}")
         print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
         
+        media_urls = [m["url"] for m in d.get("media", [])]
         if media_urls:
             print(f"{C_BOLD}关联文件或多媒体：{C_RESET}")
             for i, m_url in enumerate(media_urls):
@@ -1681,39 +2057,24 @@ def cmd_lostfound(args):
 
     page = args.page or 1
     log_info(f"正在获取全校失物招领列表 (第 {page} 页)...")
-    status, body, _ = make_request(f"/lostAndFound/lostAndFoundList/?page={page}", method="GET", follow_redirects=True)
-    if status != 200:
-        log_error(f"获取失物招领列表失败 (HTTP Code: {status})")
+    res = fetch_lostfound(page)
+    if not res.get("success"):
+        log_error(res.get("error"))
         return
-    html_content = body.decode("utf-8", errors="ignore")
-    
-    tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
-    trs = tr_pattern.findall(html_content)
-    
-    rows = []
-    for tr in trs:
-        tds = re.findall(r'<(?:td|th)[^>]*>(.*?)</(?:td|th)>', tr, re.DOTALL)
-        if len(tds) >= 8 and "类别" not in tds[1]:
-            lf_id = ""
-            id_m = re.search(r'href=["\']/lostAndFound/lostAndFoundDetail/(\d+)/["\']', tds[2])
-            if id_m:
-                lf_id = id_m.group(1)
-                
-            category = clean_html(tds[1])
-            title = clean_html(tds[2])
-            reporter = clean_html(tds[3])
-            start_date = clean_html(tds[6])
-            status_text = clean_html(tds[8]) if len(tds) > 8 else ""
-            
-            rows.append([lf_id, category, title, reporter, start_date, status_text])
-            
+        
+    rows = res.get("data", [])
     if not rows:
         log_warn("没有找到任何失物招领记录。")
         return
         
     print(f"\n{C_BOLD}{C_GREEN}全校失物招领列表 (第 {page} 页) ==={C_RESET}")
-    for row in rows:
-        lf_id, category, title, reporter, start_date, status_text = row
+    for item in rows:
+        lf_id = item["id"]
+        category = item["category"]
+        title = item["title"]
+        reporter = item["reporter"]
+        start_date = item["date"]
+        status_text = item["status"]
         cat_color = C_YELLOW if "丢" in category else C_GREEN
         status_color = C_RED if "未" in status_text or "处理中" in status_text else C_GREY
         print(f"[{C_GREEN}{lf_id}{C_RESET}] {C_BOLD}{cat_color}[{category}]{C_RESET} {title}")
@@ -2331,35 +2692,18 @@ def getkey():
         return 'esc'
 
 def fetch_messages_data(page):
-    url = f"/sitemessage/message-Receive-list/?page={page}"
-    status, body, _ = make_request(url, method="GET")
-    if status != 200:
+    res = fetch_messages(page)
+    if not res.get("success"):
         return []
-    html_content = body.decode("utf-8", errors="ignore")
-    tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL)
-    trs = tr_pattern.findall(html_content)
     rows = []
-    for tr in trs:
-        if "show-Message" in tr or "del_siteMessage" in tr:
-            id_m = re.search(r'/sitemessage/show-Message/(\d+)/\s*', tr)
-            msg_id = id_m.group(1) if id_m else ""
-            if not msg_id:
-                id_m = re.search(r'del_siteMessage\(this,(\d+)\)', tr)
-                if id_m:
-                    msg_id = id_m.group(1)
-            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-            if len(tds) >= 3:
-                title = clean_html(tds[1])
-                sender = clean_html(tds[2])
-                date = clean_html(tds[3]) if len(tds) > 3 else ""
-                is_unread = ("未阅" in tr or "未读" in tr or "font-weight" in tr)
-                rows.append({
-                    "id": msg_id,
-                    "title": title,
-                    "sender": sender,
-                    "date": date,
-                    "unread": is_unread
-                })
+    for item in res.get("data", []):
+        rows.append({
+            "id": item.get("id", ""),
+            "title": item.get("title", ""),
+            "sender": item.get("sender", ""),
+            "date": item.get("time", ""),
+            "unread": item.get("unread", False)
+        })
     return rows
 
 def show_message_detail_tui(msg_id):

@@ -91,8 +91,6 @@ class ChunhuiApi:
 
     def get_captcha(self):
         """获取登录图形验证码（Base64）及临时会话"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
         res = ch_cli.get_captcha()
         if res.get("success"):
             self._cached_captcha_cookies = res.get("cookies", {})
@@ -100,15 +98,12 @@ class ChunhuiApi:
 
     def login_account(self, username, password, code):
         """通过学号/用户名、密码与验证码登录"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
         username = (username or "").strip()
         password = (password or "").strip()
         code = (code or "").strip()
         if not username or not password or not code:
             return {"success": False, "error": "请完整填写用户名、密码和验证码"}
-        res = ch_cli.login_with_credentials(username, password, code, self._cached_captcha_cookies)
-        return res
+        return ch_cli.login_with_credentials(username, password, code, self._cached_captcha_cookies)
 
     def auto_detect_cookie(self):
         """自动从本机主流浏览器 (Safari, Chrome, Firefox, Edge) 检索校园网 Cookie"""
@@ -134,8 +129,7 @@ class ChunhuiApi:
         cookie_str = (cookie_str or "").strip()
         if not cookie_str:
             return {"success": False, "error": "Cookie 内容不能为空"}
-        res = ch_cli.login_with_cookie(cookie_str)
-        return res
+        return ch_cli.login_with_cookie(cookie_str)
 
     def logout(self):
         """清除本地会话并退出登录"""
@@ -148,559 +142,73 @@ class ChunhuiApi:
 
     def get_messages(self, page=1):
         """获取收件箱信件列表"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request(f"/sitemessage/message-Receive-list/?page={page}", method="GET")
-            if status != 200:
-                return {"success": False, "error": f"服务器响应异常 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            trs = re.findall(r'<tr[^>]*>(.*?)</tr>', html_content, re.DOTALL)
-            rows = []
-            for tr in trs:
-                if "show-Message" in tr or "del_siteMessage" in tr:
-                    id_m = re.search(r'/sitemessage/show-Message/(\d+)/\s*', tr)
-                    msg_id = id_m.group(1) if id_m else ""
-                    if not msg_id:
-                        id_m = re.search(r'del_siteMessage\(this,(\d+)\)', tr)
-                        if id_m:
-                            msg_id = id_m.group(1)
-                    tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-                    if len(tds) >= 3:
-                        title = ch_cli.clean_html(tds[1])
-                        sender = ch_cli.clean_html(tds[2])
-                        date = ch_cli.clean_html(tds[3]) if len(tds) > 3 else ""
-                        is_unread = ("未阅" in tr or "未读" in tr or "font-weight" in tr)
-                        rows.append({
-                            "id": msg_id,
-                            "title": title,
-                            "sender": sender,
-                            "time": date,
-                            "unread": is_unread
-                        })
-            return {"success": True, "data": rows, "page": page}
-        except Exception as e:
-            return {"success": False, "error": f"获取信件失败: {e}"}
+        return ch_cli.fetch_messages(page)
 
     def get_message_detail(self, msg_id):
         """获取信件正文与附件列表"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request(f"/sitemessage/show-Message/{msg_id}/", method="GET")
-            if status != 200:
-                return {"success": False, "error": f"获取信件详情失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            
-            title = "无标题"
-            m = re.search(r'<div class="ArticleTitle">(.*?)</div>', html_content, re.DOTALL)
-            if m:
-                title = ch_cli.clean_html(m.group(1))
-                
-            sender = "未知"
-            m = re.search(r'发送者：\s*([^\s<]+)', html_content)
-            if m:
-                sender = m.group(1).strip()
-                
-            send_time = "未知"
-            m = re.search(r'发送时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
-            if m:
-                send_time = m.group(1).strip()
-                
-            content = ""
-            m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>\s*</div>', html_content, re.DOTALL)
-            if not m:
-                m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
-            if m:
-                content = ch_cli.render_html_content(m.group(1))
-                
-            recipients_all = "无"
-            m = re.search(r'id="multiCollapseExample1">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
-            if m:
-                recipients_all = ch_cli.clean_html(m.group(1))
-                
-            recipients_unread = "无"
-            m = re.search(r'id="multiCollapseExample2">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
-            if m:
-                recipients_unread = ch_cli.clean_html(m.group(1))
-                
-            # 提取附件链接
-            links = []
-            for lk in re.findall(r'href=["\'](.*?)["\']', html_content):
-                lk = lk.strip()
-                if not lk or lk == "#" or "javascript:" in lk:
-                    continue
-                lower = lk.lower()
-                is_file = any(ext in lower for ext in ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.png', '.jpg', '.txt', '.mp4'))
-                if is_file or "/fileaccess/" in lk:
-                    if any(k in lk for k in ("Logo", "newFunc", "sydw")):
-                        continue
-                    full = lk if lk.startswith("http") else f"{CAMPUS_BASE_URL}{lk}" if lk.startswith("/") else f"{CAMPUS_BASE_URL}/{lk}"
-                    filename = urllib.parse.unquote(full.split('/')[-1].split('?')[0])
-                    if not any(item["url"] == full for item in links):
-                        links.append({"name": filename, "url": full})
-                        
-            return {
-                "success": True,
-                "data": {
-                    "id": msg_id,
-                    "title": title,
-                    "sender": sender,
-                    "time": send_time,
-                    "content": content,
-                    "recipients_all": recipients_all,
-                    "recipients_unread": recipients_unread,
-                    "attachments": links
-                }
-            }
-        except Exception as e:
-            return {"success": False, "error": f"解析信件异常: {e}"}
+        return ch_cli.fetch_message_detail(msg_id)
 
     # ----- 2. 校园通知与公告 (News) -----
 
     def get_news(self, column="16", page=1):
         """获取校内公告与资讯列表 (16=通知公告, 13=新闻聚焦, 19=校内公示, 51=值周小结)"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request(f"/article/column-detail/{column}/?page={page}", method="GET")
-            if status != 200:
-                return {"success": False, "error": f"获取资讯列表失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            trs = re.findall(r'<tr[^>]*>(.*?)</tr>', html_content, re.DOTALL)
-            rows = []
-            for tr in trs:
-                if "/article/article-detail/" in tr:
-                    id_m = re.search(r'/article/article-detail/(\d+)/\s*', tr)
-                    art_id = id_m.group(1) if id_m else ""
-                    tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-                    if len(tds) >= 2:
-                        title = ch_cli.clean_html(tds[0])
-                        date = ch_cli.clean_html(tds[1])
-                        rows.append({"id": art_id, "title": title, "date": date})
-            return {"success": True, "data": rows, "column": column, "page": page}
-        except Exception as e:
-            return {"success": False, "error": f"获取文章资讯异常: {e}"}
+        return ch_cli.fetch_news(column, page)
 
     def get_news_detail(self, article_id):
         """获取资讯文章详细正文"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request(f"/article/article-detail/{article_id}/", method="GET", follow_redirects=True)
-            if status != 200:
-                return {"success": False, "error": f"获取文章详情失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            
-            title = "无标题"
-            m = re.search(r'<div class="ArticleTitle[^>]*>(.*?)</div>', html_content, re.DOTALL)
-            if m:
-                title = ch_cli.clean_html(m.group(1))
-                
-            source = "校内发布"
-            m = re.search(r'来源：\s*([^<]+)', html_content)
-            if m:
-                source = ch_cli.clean_html(m.group(1))
-                
-            pub_time = "未知"
-            m = re.search(r'发布时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
-            if m:
-                pub_time = m.group(1).strip()
-                
-            content = ""
-            m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
-            if m:
-                content = ch_cli.render_html_content(m.group(1))
-                
-            links = []
-            for lk in re.findall(r'href=["\'](.*?)["\']', html_content):
-                lk = lk.strip()
-                if any(lk.lower().endswith(ext) for ext in ('.pdf', '.docx', '.doc', '.xlsx', '.xls', '.zip', '.rar', '.png', '.jpg')) or '/fileaccess/' in lk:
-                    full = lk if lk.startswith("http") else f"{CAMPUS_BASE_URL}{lk}" if lk.startswith("/") else f"{CAMPUS_BASE_URL}/{lk}"
-                    filename = urllib.parse.unquote(full.split('/')[-1].split('?')[0])
-                    if not any(item["url"] == full for item in links):
-                        links.append({"name": filename, "url": full})
-                        
-            return {
-                "success": True,
-                "data": {
-                    "id": article_id,
-                    "title": title,
-                    "source": source,
-                    "time": pub_time,
-                    "content": content,
-                    "attachments": links
-                }
-            }
-        except Exception as e:
-            return {"success": False, "error": f"解析文章详情异常: {e}"}
+        return ch_cli.fetch_news_detail(article_id)
 
     # ----- 3. 班级课表查询系统 (Schedule) -----
 
     def get_classes(self, grade_id):
         """根据年级ID (1=高一, 2=高二, 3=高三) 获取全部班级列表"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request("/subjectArrangement/getClassFromGradeForSelect/", method="POST", data={"theGradeID": grade_id})
-            if status != 200:
-                return {"success": False, "error": f"获取班级列表失败 (HTTP {status})"}
-            classes = json.loads(body.decode("utf-8"))
-            return {"success": True, "data": classes}
-        except Exception as e:
-            return {"success": False, "error": f"解析班级列表异常: {e}"}
+        return ch_cli.fetch_classes(grade_id)
 
     def get_schedule(self, grade_id, class_id):
         """获取指定班级的周课表矩阵和任课教师列表"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            data_post = {
-                "chGradeIDForName": grade_id,
-                "chClassIDForName": class_id
-            }
-            status, body_html, _ = ch_cli.make_request("/subjectArrangement/ClassClassArrangement_JustForView/", method="POST", data=data_post)
-            if status != 200:
-                return {"success": False, "error": f"查询课表失败 (HTTP {status})"}
-            html_content = body_html.decode("utf-8", errors="ignore")
-            
-            match = re.search(r'dataObj\s*=\s*(\[\[.*?\]\])\s*;', html_content)
-            if not match:
-                return {"success": False, "error": "页面中未找到课表数据矩阵 (可能未排课)"}
-            data_obj = json.loads(match.group(1))
-            
-            main_manager = "未知"
-            sub_manager = "未知"
-            m1 = re.search(r'班主任：\s*([^\s<]+)', html_content)
-            if m1:
-                main_manager = m1.group(1).strip()
-            m2 = re.search(r'副班主任：\s*([^\s<]+)', html_content)
-            if m2:
-                sub_manager = m2.group(1).strip()
-                
-            teachers = []
-            tm = re.search(r'id="ClassSubjectTeacher"[^>]*>(.*?)</div>\s*</div>', html_content, re.DOTALL)
-            if tm:
-                uls = re.findall(r'<ul>(.*?)</ul>', tm.group(1), re.DOTALL)
-                for ul in uls:
-                    clean = re.sub(r'<[^>]+>', '', ul).strip()
-                    clean = re.sub(r'\s+', ' ', clean)
-                    if clean:
-                        teachers.append(clean)
-                        
-            return {
-                "success": True,
-                "data": {
-                    "matrix": data_obj,
-                    "main_manager": main_manager,
-                    "sub_manager": sub_manager,
-                    "teachers": teachers
-                }
-            }
-        except Exception as e:
-            return {"success": False, "error": f"课表解析异常: {e}"}
+        return ch_cli.fetch_schedule(grade_id, class_id)
 
     # ----- 4. 常规卫生与纪律考评 (Hygiene) -----
 
     def get_hygiene(self, page=1):
         """获取纪律卫生违纪检查列表"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request(f"/classappraise/hygienePictures_receive_list/?page={page}", method="GET")
-            if status != 200:
-                return {"success": False, "error": f"获取考评记录失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            trs = re.findall(r'<tr[^>]*>(.*?)</tr>', html_content, re.DOTALL)
-            rows = []
-            for tr in trs:
-                if "show-Message" in tr:
-                    id_m = re.search(r'/classappraise/show-Message/(\d+)/\s*', tr)
-                    rec_id = id_m.group(1) if id_m else ""
-                    tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-                    if len(tds) >= 4:
-                        location = ch_cli.clean_html(tds[1])
-                        desc = ch_cli.clean_html(tds[2])
-                        date = ch_cli.clean_html(tds[3])
-                        rows.append({"id": rec_id, "location": location, "desc": desc, "date": date})
-            return {"success": True, "data": rows, "page": page}
-        except Exception as e:
-            return {"success": False, "error": f"获取考评记录异常: {e}"}
+        return ch_cli.fetch_hygiene(page)
 
     def get_hygiene_detail(self, record_id):
         """获取考评多媒体现场记录及通报情况"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request(f"/classappraise/show-Message/{record_id}/", method="GET")
-            if status != 200:
-                return {"success": False, "error": f"获取考评详情失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            
-            desc = "未知违纪描述"
-            m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
-            if m:
-                desc = ch_cli.render_html_content(m.group(1))
-                
-            media_urls = []
-            for img in re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_content):
-                if not any(k in img for k in ("Logo", "newFunc", "sydw")):
-                    full = img if img.startswith("http") else f"{CAMPUS_BASE_URL}{img}" if img.startswith("/") else f"{CAMPUS_BASE_URL}/{img}"
-                    if full not in media_urls:
-                        media_urls.append({"type": "image", "url": full})
-            for vid in re.findall(r'<video[^>]+src=["\'](.*?)["\']', html_content):
-                full = vid if vid.startswith("http") else f"{CAMPUS_BASE_URL}{vid}" if vid.startswith("/") else f"{CAMPUS_BASE_URL}/{vid}"
-                if full not in [item["url"] for item in media_urls]:
-                    media_urls.append({"type": "video", "url": full})
-                    
-            recipients_all = "无"
-            m = re.search(r'id="multiCollapseExample1">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
-            if m:
-                recipients_all = ch_cli.clean_html(m.group(1))
-                
-            recipients_unread = "无"
-            m = re.search(r'id="multiCollapseExample2">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
-            if m:
-                recipients_unread = ch_cli.clean_html(m.group(1))
-                
-            return {
-                "success": True,
-                "data": {
-                    "id": record_id,
-                    "desc": desc,
-                    "media_urls": media_urls,
-                    "recipients_all": recipients_all,
-                    "recipients_unread": recipients_unread
-                }
-            }
-        except Exception as e:
-            return {"success": False, "error": f"解析考评详情异常: {e}"}
+        return ch_cli.fetch_hygiene_detail(record_id)
 
     # ----- 5. 寝室纪律内务 (Bedroom) -----
 
     def get_bedroom_hygiene(self, dorm="1", start="", end="", show_all=False):
         """查询宿舍楼宇考评扣分总表 (dorm 1~9 对应 3号楼~11号楼)"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            if not start:
-                start = time.strftime("%Y-%m-%d", time.localtime(time.time() - 30 * 86400))
-            if not end:
-                end = time.strftime("%Y-%m-%d")
-            post_data = {
-                "chDormitoryForName": dorm,
-                "theBeginDateForName": start,
-                "theEndDateForName": end
-            }
-            status, body, _ = ch_cli.make_request("/classappraise/BedRoom_DisciplineHygiene_JustForView/", method="POST", data=post_data)
-            if status != 200:
-                return {"success": False, "error": f"查询宿舍考评失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            trs = re.findall(r'<tr[^>]*>(.*?)</tr>', html_content, re.DOTALL)
-            rows = []
-            for tr in trs:
-                tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-                if len(tds) >= 4:
-                    room = ch_cli.clean_html(tds[0])
-                    cls_name = ch_cli.clean_html(tds[1])
-                    hyg = ch_cli.clean_html(tds[2])
-                    disc = ch_cli.clean_html(tds[3])
-                    total = ch_cli.clean_html(tds[4]) if len(tds) > 4 else ""
-                    if not show_all and (not total or total.strip() in ("", "0")):
-                        continue
-                    rows.append({
-                        "room": room,
-                        "class": cls_name,
-                        "hygiene": hyg or "-",
-                        "discipline": disc or "-",
-                        "total": total or "-"
-                    })
-            return {"success": True, "data": rows, "dorm": dorm, "start": start, "end": end}
-        except Exception as e:
-            return {"success": False, "error": f"解析宿舍记录异常: {e}"}
+        return ch_cli.fetch_dorm_hygiene(dorm, start, end, show_all)
 
     def get_bedroom_class(self, grade_id, class_name):
         """查询班级寝室分配对应"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            res = ch_cli.find_class_id(int(grade_id), class_name)
-            if not res:
-                return {"success": False, "error": f"在所选年级中未找到班级: {class_name}"}
-            class_id, resolved_name = res
-            post_data = {
-                "chGradeIDForName": grade_id,
-                "chClassIDForName": class_id
-            }
-            status, body, _ = ch_cli.make_request("/classappraise/QueryBedroomsByClassID_JustForView/", method="POST", data=post_data)
-            if status != 200:
-                return {"success": False, "error": f"查询班级寝室失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            m = re.search(r'class="alert alert-primary"[^>]*>\s*(.*?)\s*</div>', html_content, re.DOTALL)
-            if m:
-                info = ch_cli.clean_html(m.group(1))
-                return {"success": True, "class_name": resolved_name, "info": info}
-            return {"success": True, "class_name": resolved_name, "info": "该班级暂未登记寝室分配数据"}
-        except Exception as e:
-            return {"success": False, "error": f"查询寝室异常: {e}"}
+        return ch_cli.fetch_dorm_class(grade_id, class_name)
 
     # ----- 6. 行政值周安排 (Duty) -----
 
     def get_duty(self):
         """获取教师行政值周周次排班总表"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request("/classappraise/TeacherDutyWeek_JustForView/", method="GET")
-            if status != 200:
-                return {"success": False, "error": f"获取值周安排失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            blocks = re.findall(r'<ul class="list-group"\s*>(.*?)</ul>', html_content, re.DOTALL)
-            duties = []
-            for block in blocks:
-                is_current = "list-group-item-success" in block
-                lis = re.findall(r'<li[^>]*>(.*?)</li>', block, re.DOTALL)
-                if not lis:
-                    continue
-                week_name = re.sub(r'<[^>]+>', '', lis[0]).strip()
-                date_range = re.sub(r'<[^>]+>', '', lis[1]).strip() if len(lis) > 1 else ""
-                details = {}
-                for li in lis[2:]:
-                    clean = re.sub(r'<[^>]+>', '', li).strip()
-                    if "：" in clean:
-                        k, v = clean.split("：", 1)
-                        details[k.strip()] = v.strip()
-                duties.append({
-                    "is_current": is_current,
-                    "week": week_name,
-                    "date": date_range,
-                    "admin": details.get("行政值周", ""),
-                    "group1": details.get("第一小组", ""),
-                    "group2": details.get("第二小组", ""),
-                    "group3": details.get("第三小组", ""),
-                    "duty_class": details.get("值周班级", ""),
-                    "talk": details.get("旗下讲话", "")
-                })
-            return {"success": True, "data": duties}
-        except Exception as e:
-            return {"success": False, "error": f"解析值周数据异常: {e}"}
+        return ch_cli.fetch_duty()
 
     # ----- 7. 全校失物招领 (Lost & Found) -----
 
     def get_lostfound(self, page=1):
         """获取失物招领列表"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request(f"/lostAndFound/?page={page}", method="GET")
-            if status != 200:
-                return {"success": False, "error": f"获取失物招领失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            trs = re.findall(r'<tr[^>]*>(.*?)</tr>', html_content, re.DOTALL)
-            rows = []
-            for tr in trs:
-                if "/lostAndFound/lostAndFoundDetail/" in tr:
-                    tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-                    if len(tds) >= 7:
-                        id_m = re.search(r'href=["\']/lostAndFound/lostAndFoundDetail/(\d+)/["\']', tds[2])
-                        lf_id = id_m.group(1) if id_m else ""
-                        cat = ch_cli.clean_html(tds[1])
-                        title = ch_cli.clean_html(tds[2])
-                        reporter = ch_cli.clean_html(tds[3])
-                        date = ch_cli.clean_html(tds[6])
-                        st = ch_cli.clean_html(tds[8]) if len(tds) > 8 else ""
-                        rows.append({
-                            "id": lf_id,
-                            "category": cat,
-                            "title": title,
-                            "reporter": reporter,
-                            "date": date,
-                            "status": st
-                        })
-            return {"success": True, "data": rows, "page": page}
-        except Exception as e:
-            return {"success": False, "error": f"解析招领列表异常: {e}"}
+        return ch_cli.fetch_lostfound(page)
 
     def get_lostfound_detail(self, item_id):
         """获取失物招领详细说明与认领联系方式"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        try:
-            status, body, _ = ch_cli.make_request(f"/lostAndFound/lostAndFoundDetail/{item_id}/", method="GET", follow_redirects=True)
-            if status != 200:
-                return {"success": False, "error": f"获取招领详情失败 (HTTP {status})"}
-            html_content = body.decode("utf-8", errors="ignore")
-            
-            title = "无标题"
-            m = re.search(r'<div class="ArticleTitle[^>]*>(.*?)</div>', html_content, re.DOTALL)
-            if m:
-                title = ch_cli.clean_html(m.group(1))
-                
-            reporter = "未知"
-            m = re.search(r'来源：\s*([^<]+)', html_content)
-            if m:
-                reporter = ch_cli.clean_html(m.group(1))
-                
-            reviewer = "未知"
-            m = re.search(r'审核人：\s*([^<]+)', html_content)
-            if m:
-                reviewer = ch_cli.clean_html(m.group(1))
-                
-            pub_time = "未知"
-            m = re.search(r'发布时间：\s*([^\s<]+(?:\s+[^\s<]+)?)', html_content)
-            if m:
-                pub_time = m.group(1).strip()
-                
-            content = ""
-            m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
-            if m:
-                content = ch_cli.render_html_content(m.group(1))
-                
-            return {
-                "success": True,
-                "data": {
-                    "id": item_id,
-                    "title": title,
-                    "reporter": reporter,
-                    "reviewer": reviewer,
-                    "time": pub_time,
-                    "content": content
-                }
-            }
-        except Exception as e:
-            return {"success": False, "error": f"解析招领详情异常: {e}"}
+        return ch_cli.fetch_lostfound_detail(item_id)
 
     # ----- 8. 校内文件寄取处 (File Station) -----
 
     def retrieve_file(self, code):
         """输入 6 位取件密码查询远端文件详情"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        code = (code or "").strip()
-        if len(code) != 6 or not code.isdigit():
-            return {"success": False, "error": "请输入有效的 6 位数字取件密码"}
-        try:
-            post_data = {"thePasswordTheUserEntered": code}
-            status, body, _ = ch_cli.make_request("/fileaccess/get-AccessFile/", method="POST", data=post_data)
-            if status != 200:
-                return {"success": False, "error": f"查询提取码失败 (HTTP {status})"}
-            res_json = json.loads(body.decode("utf-8"))
-            if res_json.get("error") != "0":
-                err_msg = res_json.get("msg", "提取码不存在、错误或文件已过期")
-                return {"success": False, "error": err_msg}
-            file_path_name = res_json.get("filePathName")
-            file_name = res_json.get("fileNameForDisplay")
-            if not file_path_name or not file_name:
-                return {"success": False, "error": "服务端返回的文件信息不完整"}
-            download_url = f"{CAMPUS_BASE_URL}/static/fileaccess/{file_path_name}"
-            return {
-                "success": True,
-                "filename": file_name,
-                "download_url": download_url,
-                "code": code
-            }
-        except Exception as e:
-            return {"success": False, "error": f"提取文件查询异常: {e}"}
+        return ch_cli.fetch_access_file(code)
 
     def choose_file(self):
         """调出原生系统文件选择器"""
@@ -716,69 +224,10 @@ class ChunhuiApi:
 
     def upload_file(self, file_path):
         """执行真实 100MB 逻辑分片上传并返回提取密码"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
-        session = ch_cli.load_session() if ch_cli else {}
-        if not session.get("sessionid"):
-            return {"success": False, "error": "文件上传需要校园网账号认证，请先点击右上角登录"}
-        if not file_path or not os.path.exists(file_path):
-            return {"success": False, "error": "所选文件不存在"}
-            
-        try:
-            file_size = os.path.getsize(file_path)
-            file_name = os.path.basename(file_path)
-            chunk_size = 100 * 1024 * 1024
-            total_chunks = math.ceil(file_size / chunk_size) if file_size > 0 else 1
-            file_guid = str(urllib.parse.quote(file_name)) + "_" + str(int(time.time()))
-            
-            with open(file_path, "rb") as f:
-                for chunk_idx in range(total_chunks):
-                    chunk_data = f.read(chunk_size)
-                    boundary = "----WebKitFormBoundary" + os.urandom(8).hex()
-                    body_parts = []
-                    fields = {
-                        "id": f"WU_FILE_{chunk_idx}",
-                        "name": file_name,
-                        "type": "application/octet-stream",
-                        "lastModifiedDate": time.strftime("%a %b %d %Y %H:%M:%S GMT+0800"),
-                        "size": str(file_size),
-                        "chunks": str(total_chunks),
-                        "chunk": str(chunk_idx),
-                        "guid": file_guid
-                    }
-                    for k, v in fields.items():
-                        body_parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode("utf-8"))
-                    body_parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n".encode("utf-8"))
-                    body_parts.append(chunk_data)
-                    body_parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
-                    full_body = b"".join(body_parts)
-                    
-                    headers = {
-                        "Content-Type": f"multipart/form-data; boundary={boundary}",
-                        "Content-Length": str(len(full_body))
-                    }
-                    status, _, _ = ch_cli.make_request("/fileaccess/files_upload/", method="POST", data=full_body, headers=headers)
-                    if status != 200:
-                        return {"success": False, "error": f"分片 {chunk_idx+1}/{total_chunks} 上传失败 (HTTP {status})"}
-                        
-            # 合并分片请求
-            complete_data = {
-                "guid": file_guid,
-                "fileName": file_name
-            }
-            status_c, body_c, _ = ch_cli.make_request("/fileaccess/upload_complete/", method="POST", data=complete_data)
-            if status_c != 200:
-                return {"success": False, "error": f"合并分片失败 (HTTP {status_c})"}
-            pwd = body_c.decode("utf-8", errors="ignore").strip()
-            pwd = ch_cli.clean_html(pwd)
-            return {"success": True, "code": pwd, "filename": file_name}
-        except Exception as e:
-            return {"success": False, "error": f"文件上传异常: {e}"}
+        return ch_cli.upload_file_chunked(file_path)
 
     def save_download(self, download_url, filename):
         """调出原生保存对话框并下载远端文件"""
-        if not check_intranet_connection():
-            return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
         if webview and webview.windows:
             win = webview.windows[0]
             dest = win.create_file_dialog(webview.SAVE_DIALOG, save_filename=filename)
@@ -786,6 +235,8 @@ class ChunhuiApi:
                 target_path = dest if isinstance(dest, str) else dest[0]
                 try:
                     status, body, _ = ch_cli.make_request(download_url, method="GET")
+                    if status == 0:
+                        return {"success": False, "error": "未连接到校园内网 (10.181.200.3)"}
                     if status == 200:
                         with open(target_path, "wb") as f:
                             f.write(body)
@@ -1575,6 +1026,19 @@ function renderErrorCard(containerId, errorMsg, retryFn) {
   `;
 }
 
+function renderLoginRequiredCard(containerId, tip) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = `
+    <div class="empty-state">
+      <div class="empty-icon">🔐</div>
+      <div class="empty-title">需要登录校园网认证</div>
+      <div class="empty-desc">${tip || '该模块需使用学号/工号认证。请先登录校园网账号。'}</div>
+      <button class="btn btn-primary" style="margin-top:10px;" onclick="openLoginModal()">🔑 立即登录</button>
+    </div>
+  `;
+}
+
 function renderEmptyState(containerId, tip) {
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -1807,14 +1271,37 @@ function loadTabData(tabId) {
 
 async function loadInbox(page) {
   currentInboxPage = page;
-  document.getElementById('inbox-page-num').innerText = page;
-  const tbody = document.getElementById('inbox-rows');
+  const pageNum = document.getElementById('inbox-page-num');
+  if (pageNum) pageNum.innerText = page;
+
+  let tbody = document.getElementById('inbox-rows');
+  if (!tbody) {
+    document.getElementById('inbox-card').innerHTML = `
+      <table class="data-table" id="inbox-table">
+        <thead>
+          <tr>
+            <th style="width: 80px;">编号</th>
+            <th>标题</th>
+            <th style="width: 130px;">发件人</th>
+            <th style="width: 150px;">发送时间</th>
+            <th style="width: 85px;">状态</th>
+          </tr>
+        </thead>
+        <tbody id="inbox-rows"></tbody>
+      </table>
+    `;
+    tbody = document.getElementById('inbox-rows');
+  }
   tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:24px;">正在加载收件箱...</td></tr>';
 
   try {
     const res = await window.pywebview.api.get_messages(page);
     if (!res.success) {
-      renderErrorCard('inbox-card', res.error, `loadInbox(${page})`);
+      if (res.need_login) {
+        renderLoginRequiredCard('inbox-card', res.error);
+      } else {
+        renderErrorCard('inbox-card', res.error, `loadInbox(${page})`);
+      }
       return;
     }
     const list = res.data || [];
@@ -2353,12 +1840,22 @@ async function showLostfoundDetail(itemId) {
       return;
     }
     const d = res.data;
+    let mediaHtml = '';
+    if (d.media && d.media.length > 0) {
+      mediaHtml = `<div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border);">
+        <strong style="color:var(--primary);">📎 关联文件或多媒体：</strong>
+        <div style="margin-top:6px;">
+          ${d.media.map(m => `<div style="margin:4px 0;"><a href="javascript:void(0)" onclick="downloadRemoteFile('${m.url}', '${m.name}')" style="color:var(--primary); text-decoration:underline;">${m.name}</a></div>`).join('')}
+        </div>
+      </div>`;
+    }
     document.getElementById('modal-content').innerHTML = `
       <div style="font-size:16px; font-weight:bold; margin-bottom:8px; color:#0f172a;">${d.title}</div>
       <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px; border-bottom:1px solid var(--border); padding-bottom:8px;">
         发布部门：${d.reporter} &nbsp;|&nbsp; 审核人：${d.reviewer} &nbsp;|&nbsp; 时间：${d.time}
       </div>
       <div style="line-height:1.7; font-size:13px; white-space:pre-wrap;">${d.content || '（暂无详细补充说明）'}</div>
+      ${mediaHtml}
     `;
   } catch (e) {
     document.getElementById('modal-content').innerHTML = `<div style="color:var(--danger);">⚠️ 获取失败: ${e}</div>`;
