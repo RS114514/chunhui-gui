@@ -2350,17 +2350,21 @@ def fetch_daily_weather():
                     temp = round(float(rt.get("temperature", 0)))
                     app_temp = round(float(rt.get("apparent_temperature", 0)))
                     desc = res.get("forecast_keypoint", "")
-                    aqi = rt.get("air_quality", {}).get("description", {}).get("chn", "良好")
+                    aqi = rt.get("air_quality", {}).get("description", {}).get("chn", "")
                     d0 = res.get("daily", {})
-                    d_max = round(float(d0.get("temperature", [{}])[0].get("max", temp)))
-                    d_min = round(float(d0.get("temperature", [{}])[0].get("min", temp)))
+                    d_temps = d0.get("temperature", [])
+                    range_str = ""
+                    if d_temps and isinstance(d_temps, list) and len(d_temps) > 0 and "min" in d_temps[0] and "max" in d_temps[0]:
+                        d_max = round(float(d_temps[0].get("max", temp)))
+                        d_min = round(float(d_temps[0].get("min", temp)))
+                        range_str = f"{d_min}°C ~ {d_max}°C"
                     return {
                         "online": True,
                         "temp": temp,
                         "app_temp": app_temp,
                         "desc": desc,
                         "aqi": aqi,
-                        "range": f"{d_min}°C ~ {d_max}°C"
+                        "range": range_str
                     }
     except Exception:
         pass

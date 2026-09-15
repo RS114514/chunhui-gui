@@ -2194,8 +2194,8 @@ async function loadBriefing() {
         document.getElementById('briefing-weather-detail').innerText = detailParts.join(' | ') || '白马湖实时微气象监测中';
       } else {
         document.getElementById('briefing-weather-temp').innerText = '--';
-        document.getElementById('briefing-weather-desc').innerText = '离校模式 / 气象站未连接';
-        document.getElementById('briefing-weather-detail').innerText = '未连接校园内网气象站 (10.181.201.165:1908)，校外不显示推测天气';
+        document.getElementById('briefing-weather-desc').innerText = '连接失败 / 气象站未连接';
+        document.getElementById('briefing-weather-detail').innerHTML = '<span style="color:#ef4444; font-weight:600;">● 连接失败</span> 未连接校园内网气象节点 (10.181.201.165:1908)，暂无实时数据';
       }
 
       const s = res.sentence || {};
@@ -3310,7 +3310,7 @@ let appStarted = false;
 async function initClientApp() {
   if (appStarted) return;
   appStarted = true;
-  await checkNetwork(false);
+  checkNetwork(false);
   loadTabData('briefing');
 }
 
