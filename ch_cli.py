@@ -1350,8 +1350,9 @@ def fetch_lostfound(page=1):
             id_m = re.search(r'href=["\']/lostAndFound/lostAndFoundDetail/(\d+)/["\']', tds[2])
             if id_m:
                 lf_id = id_m.group(1)
+            title_m = re.search(r'<a[^>]*>(.*?)</a>', tds[2], re.DOTALL)
+            title = clean_html(title_m.group(1) if title_m else tds[2])
             category = clean_html(tds[1])
-            title = clean_html(tds[2])
             reporter = clean_html(tds[3])
             start_date = clean_html(tds[6])
             status_text = clean_html(tds[8]) if len(tds) > 8 else ""
@@ -2603,25 +2604,66 @@ class DummyArgs:
 
 def get_key_win():
     import msvcrt
-    ch = msvcrt.getch()
-    if ch in (b'\x00', b'\xe0'):
-        ch2 = msvcrt.getch()
-        if ch2 == b'H': return 'up'
-        if ch2 == b'P': return 'down'
-        if ch2 == b'K': return 'left'
-        if ch2 == b'M': return 'right'
-        if ch2 == b'I': return 'pageup'
-        if ch2 == b'Q': return 'pagedown'
-    if ch in (b'\r', b'\n'):
-        return 'enter'
-    if ch == b' ':
-        return 'space'
-    if ch == b'\x1b':
-        return 'esc'
+    import time
+
     try:
-        return ch.decode('utf-8', errors='ignore')
+        ch = msvcrt.getwch()
     except Exception:
+        ch = msvcrt.getch()
+        if isinstance(ch, bytes):
+            ch = ch.decode('latin1', errors='ignore')
+
+    # 1. 经典 Windows 控制台扩展键前缀 (0x00 或 0xE0)
+    if ch in ('\x00', '\xe0', '\u0000', '\u00e0'):
+        try:
+            ch2 = msvcrt.getwch()
+        except Exception:
+            ch2 = msvcrt.getch()
+            if isinstance(ch2, bytes):
+                ch2 = ch2.decode('latin1', errors='ignore')
+        if ch2 in ('H', 'h'): return 'up'
+        if ch2 in ('P', 'p'): return 'down'
+        if ch2 in ('K', 'k'): return 'left'
+        if ch2 in ('M', 'm'): return 'right'
+        if ch2 in ('I', 'i'): return 'pageup'
+        if ch2 in ('Q', 'q'): return 'pagedown'
         return ''
+
+    # 2. Windows Terminal / ConPTY / ANSI 转义序列 (\x1b[A, \x1b[B 等)
+    if ch == '\x1b':
+        time.sleep(0.02)
+        if msvcrt.kbhit():
+            seq = ''
+            while msvcrt.kbhit():
+                try:
+                    c = msvcrt.getwch()
+                except Exception:
+                    c = msvcrt.getch()
+                    if isinstance(c, bytes):
+                        c = c.decode('latin1', errors='ignore')
+                seq += str(c)
+            if seq in ('[A', 'OA') or seq.endswith('A'):
+                return 'up'
+            elif seq in ('[B', 'OB') or seq.endswith('B'):
+                return 'down'
+            elif seq in ('[C', 'OC') or seq.endswith('C'):
+                return 'right'
+            elif seq in ('[D', 'OD') or seq.endswith('D'):
+                return 'left'
+            elif seq in ('[5~',):
+                return 'pageup'
+            elif seq in ('[6~',):
+                return 'pagedown'
+            return 'esc'
+        return 'esc'
+
+    # 3. 回车与空格
+    if ch in ('\r', '\n'):
+        return 'enter'
+    if ch == ' ':
+        return 'space'
+
+    return ch.lower()
 
 def get_key_unix():
     import tty
@@ -2656,7 +2698,7 @@ def get_key_unix():
         elif ch1 == b' ':
             return 'space'
         try:
-            return ch1.decode('utf-8', errors='ignore')
+            return ch1.decode('utf-8', errors='ignore').lower()
         except Exception:
             return ''
     finally:
@@ -2694,7 +2736,7 @@ def getkey():
 def fetch_messages_data(page):
     res = fetch_messages(page)
     if not res.get("success"):
-        return []
+        return {"items": [], "error": res.get("error", "获取信件列表失败")}
     rows = []
     for item in res.get("data", []):
         rows.append({
@@ -2704,7 +2746,7 @@ def fetch_messages_data(page):
             "date": item.get("time", ""),
             "unread": item.get("unread", False)
         })
-    return rows
+    return {"items": rows, "error": None}
 
 def show_message_detail_tui(msg_id):
     if not msg_id:
@@ -2733,10 +2775,13 @@ def tui_messages_paginated():
         if server_page not in cached_pages:
             os.system('cls' if os.name == 'nt' else 'clear')
             print(f"\n{C_CYAN}[i] 正在获取收件箱信件 (第 {server_page} 页)...{C_RESET}")
-            items = fetch_messages_data(server_page)
-            cached_pages[server_page] = items
+            res_obj = fetch_messages_data(server_page)
+            cached_pages[server_page] = res_obj
         else:
-            items = cached_pages[server_page]
+            res_obj = cached_pages[server_page]
+
+        items = res_obj.get("items", [])
+        err = res_obj.get("error")
             
         total_subpages = max(1, (len(items) + page_size - 1) // page_size) if items else 1
         if subpage >= total_subpages:
@@ -2754,12 +2799,18 @@ def tui_messages_paginated():
         print(render_row(f"{C_CYAN}{C_BOLD}📨 校内个人收件箱 (Inbox Messages){C_RESET}", "center"))
         print(render_box_line("├", "─", "┤"))
         page_info = f"{C_BOLD}[当前页码]{C_RESET} 第 {server_page} 页 · 分屏 {subpage+1}/{total_subpages} (本屏 {len(cur_batch)} 条 / 共 {len(items)} 条)"
-        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {C_GREEN}● 就绪{C_RESET}"))
+        status_disp = f"{C_GREEN}● 就绪{C_RESET}" if not err else f"{C_RED}● 异常{C_RESET}"
+        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {status_disp}"))
         print(render_box_line("├", "─", "┤"))
         
-        if not items:
-            print(render_row(f"{C_YELLOW}当前收件箱没有信件记录或网络无法直连校园网{C_RESET}", "center"))
-            for _ in range(10):
+        if err:
+            print(render_row(f"{C_RED}⚠️ {err}{C_RESET}", "center"))
+            print(render_row(f"{C_GREY}提示: 请检查校园内网连接或在主菜单按 1 重新登录{C_RESET}", "center"))
+            for _ in range(8):
+                print(render_row(""))
+        elif not items:
+            print(render_row(f"{C_YELLOW}当前收件箱第 {server_page} 页暂无更多信件记录{C_RESET}", "center"))
+            for _ in range(9):
                 print(render_row(""))
         else:
             for idx, msg in enumerate(cur_batch):
@@ -2816,7 +2867,7 @@ def tui_messages_paginated():
             elif subpage < total_subpages - 1:
                 subpage += 1
                 selected_idx = 0
-            else:
+            elif cur_batch:
                 server_page += 1
                 subpage = 0
                 selected_idx = 0
@@ -2824,7 +2875,7 @@ def tui_messages_paginated():
             if subpage < total_subpages - 1:
                 subpage += 1
                 selected_idx = 0
-            else:
+            elif cur_batch:
                 server_page += 1
                 subpage = 0
                 selected_idx = 0
@@ -2872,6 +2923,12 @@ def show_article_detail_tui(col, article_id):
         except (KeyboardInterrupt, EOFError):
             pass
 
+def fetch_news_data(col, page):
+    res = fetch_news(column=col, page=page)
+    if not res.get("success"):
+        return {"items": [], "error": res.get("error", "获取资讯列表失败")}
+    return {"items": res.get("data", []), "error": None}
+
 def tui_news_column_paginated(col, col_name):
     server_page = 1
     page_size = 6
@@ -2879,27 +2936,17 @@ def tui_news_column_paginated(col, col_name):
     subpage = 0
     cached_pages = {}
     
-    col_map = {'announcement': '16', 'news': '17', 'notice': '18', 'duty': '19'}
-    col_id = col_map.get(col, '16')
-    
     while True:
         if server_page not in cached_pages:
             os.system('cls' if os.name == 'nt' else 'clear')
             print(f"\n{C_CYAN}[i] 正在获取 {col_name} 文章列表 (第 {server_page} 页)...{C_RESET}")
-            status, body, _ = make_request(f"/article/column-detail/{col_id}/?page={server_page}", method="GET", follow_redirects=True)
-            items = []
-            if status == 200:
-                html_content = body.decode("utf-8", errors="ignore")
-                matches = re.findall(r'<div class="ArticleTitle">\s*<a href="/article/article-detail/(\d+)/"[^>]*>(.*?)</a>\s*</div>.*?<div class="ArticleTime">(.*?)</div>', html_content, re.DOTALL)
-                for m_id, title_raw, time_raw in matches:
-                    items.append({
-                        "id": m_id,
-                        "title": clean_html(title_raw),
-                        "date": clean_html(time_raw)
-                    })
-            cached_pages[server_page] = items
+            res_obj = fetch_news_data(col, server_page)
+            cached_pages[server_page] = res_obj
         else:
-            items = cached_pages[server_page]
+            res_obj = cached_pages[server_page]
+            
+        items = res_obj.get("items", [])
+        err = res_obj.get("error")
             
         total_subpages = max(1, (len(items) + page_size - 1) // page_size) if items else 1
         if subpage >= total_subpages:
@@ -2915,12 +2962,18 @@ def tui_news_column_paginated(col, col_name):
         print(render_row(f"{C_CYAN}{C_BOLD}📰 {col_name}{C_RESET}", "center"))
         print(render_box_line("├", "─", "┤"))
         page_info = f"{C_BOLD}[页码]{C_RESET} 第 {server_page} 页 · 分屏 {subpage+1}/{total_subpages} (本屏 {len(cur_batch)} 篇 / 共 {len(items)} 篇)"
-        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {C_GREEN}● 就绪{C_RESET}"))
+        status_disp = f"{C_GREEN}● 就绪{C_RESET}" if not err else f"{C_RED}● 异常{C_RESET}"
+        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {status_disp}"))
         print(render_box_line("├", "─", "┤"))
         
-        if not items:
-            print(render_row(f"{C_YELLOW}当前栏目暂无文章或未连接到校园网{C_RESET}", "center"))
-            for _ in range(10):
+        if err:
+            print(render_row(f"{C_RED}⚠️ {err}{C_RESET}", "center"))
+            print(render_row(f"{C_GREY}提示: 请检查校园内网连接或在主菜单按 1 重新登录{C_RESET}", "center"))
+            for _ in range(8):
+                print(render_row(""))
+        elif not items:
+            print(render_row(f"{C_YELLOW}当前栏目第 {server_page} 页暂无更多文章记录{C_RESET}", "center"))
+            for _ in range(9):
                 print(render_row(""))
         else:
             for idx, art in enumerate(cur_batch):
@@ -2971,7 +3024,7 @@ def tui_news_column_paginated(col, col_name):
             elif subpage < total_subpages - 1:
                 subpage += 1
                 selected_idx = 0
-            else:
+            elif cur_batch:
                 server_page += 1
                 subpage = 0
                 selected_idx = 0
@@ -2979,7 +3032,7 @@ def tui_news_column_paginated(col, col_name):
             if subpage < total_subpages - 1:
                 subpage += 1
                 selected_idx = 0
-            else:
+            elif cur_batch:
                 server_page += 1
                 subpage = 0
                 selected_idx = 0
@@ -3067,6 +3120,12 @@ def show_hygiene_detail_tui(h_id):
         except (KeyboardInterrupt, EOFError):
             pass
 
+def fetch_hygiene_data(page):
+    res = fetch_hygiene(page=page)
+    if not res.get("success"):
+        return {"items": [], "error": res.get("error", "获取考评记录失败")}
+    return {"items": res.get("data", []), "error": None}
+
 def tui_hygiene_paginated():
     server_page = 1
     page_size = 6
@@ -3078,23 +3137,13 @@ def tui_hygiene_paginated():
         if server_page not in cached_pages:
             os.system('cls' if os.name == 'nt' else 'clear')
             print(f"\n{C_CYAN}[i] 正在获取纪律卫生考评记录 (第 {server_page} 页)...{C_RESET}")
-            status, body, _ = make_request(f"/classappraise/hygienePictures_receive_list/?page={server_page}", method="GET")
-            items = []
-            if status == 200:
-                html_content = body.decode("utf-8", errors="ignore")
-                trs = re.findall(r'<tr[^>]*>(.*?)</tr>', html_content, re.DOTALL)
-                for tr in trs:
-                    if "show-Message" in tr:
-                        id_m = re.search(r'/classappraise/show-Message/(\d+)/\s*', tr)
-                        h_id = id_m.group(1) if id_m else ""
-                        tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
-                        if len(tds) >= 3:
-                            desc = clean_html(tds[1])
-                            date = clean_html(tds[2]) if len(tds) > 2 else ""
-                            items.append({"id": h_id, "desc": desc, "date": date})
-            cached_pages[server_page] = items
+            res_obj = fetch_hygiene_data(server_page)
+            cached_pages[server_page] = res_obj
         else:
-            items = cached_pages[server_page]
+            res_obj = cached_pages[server_page]
+            
+        items = res_obj.get("items", [])
+        err = res_obj.get("error")
             
         total_subpages = max(1, (len(items) + page_size - 1) // page_size) if items else 1
         if subpage >= total_subpages:
@@ -3110,35 +3159,43 @@ def tui_hygiene_paginated():
         print(render_row(f"{C_CYAN}{C_BOLD}🧹 纪律卫生考评记录 (Hygiene Appraisals){C_RESET}", "center"))
         print(render_box_line("├", "─", "┤"))
         page_info = f"{C_BOLD}[页码]{C_RESET} 第 {server_page} 页 · 分屏 {subpage+1}/{total_subpages} (本屏 {len(cur_batch)} 条 / 共 {len(items)} 条)"
-        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {C_GREEN}● 就绪{C_RESET}"))
+        status_disp = f"{C_GREEN}● 就绪{C_RESET}" if not err else f"{C_RED}● 异常{C_RESET}"
+        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {status_disp}"))
         print(render_box_line("├", "─", "┤"))
         
-        if not items:
-            print(render_row(f"{C_YELLOW}当前页暂无考评记录或未连接到校园网{C_RESET}", "center"))
-            for _ in range(10):
+        if err:
+            print(render_row(f"{C_RED}⚠️ {err}{C_RESET}", "center"))
+            print(render_row(f"{C_GREY}提示: 请检查校园内网连接或在主菜单按 1 重新登录{C_RESET}", "center"))
+            for _ in range(8):
+                print(render_row(""))
+        elif not items:
+            print(render_row(f"{C_YELLOW}当前考评记录第 {server_page} 页暂无更多数据{C_RESET}", "center"))
+            for _ in range(9):
                 print(render_row(""))
         else:
             for idx, hg in enumerate(cur_batch):
                 num_tag = f"[{start_idx + idx + 1:02d}]"
                 h_id = hg.get("id", "")
+                loc = hg.get("location", "")
                 desc = hg.get("desc", "无说明")
+                full_desc = f"[{loc}] {desc}" if loc else desc
                 date = hg.get("date", "")
                 max_w = 46
-                if get_visual_width(desc) > max_w:
+                if get_visual_width(full_desc) > max_w:
                     tr = ""
                     w = 0
-                    for ch in desc:
+                    for ch in full_desc:
                         cw = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
                         if w + cw > max_w - 3:
                             break
                         tr += ch
                         w += cw
-                    desc = tr + "..."
+                    full_desc = tr + "..."
                 if idx == selected_idx:
-                    l1 = f"{C_GREEN}{C_BOLD}▶ {num_tag} [{h_id}] {desc}{C_RESET}"
+                    l1 = f"{C_GREEN}{C_BOLD}▶ {num_tag} [{h_id}] {full_desc}{C_RESET}"
                     l2 = f"        考评时间: {C_GREY}{date}{C_RESET}"
                 else:
-                    l1 = f"  {C_GREY}{num_tag}{C_RESET} [{h_id}] {desc}"
+                    l1 = f"  {C_GREY}{num_tag}{C_RESET} [{h_id}] {full_desc}"
                     l2 = f"        考评时间: {C_GREY}{date}{C_RESET}"
                 print(render_row(l1))
                 print(render_row(l2))
@@ -3166,7 +3223,7 @@ def tui_hygiene_paginated():
             elif subpage < total_subpages - 1:
                 subpage += 1
                 selected_idx = 0
-            else:
+            elif cur_batch:
                 server_page += 1
                 subpage = 0
                 selected_idx = 0
@@ -3174,7 +3231,7 @@ def tui_hygiene_paginated():
             if subpage < total_subpages - 1:
                 subpage += 1
                 selected_idx = 0
-            else:
+            elif cur_batch:
                 server_page += 1
                 subpage = 0
                 selected_idx = 0
@@ -3220,6 +3277,12 @@ def show_lostfound_detail_tui(l_id):
         except (KeyboardInterrupt, EOFError):
             pass
 
+def fetch_lostfound_data(page):
+    res = fetch_lostfound(page=page)
+    if not res.get("success"):
+        return {"items": [], "error": res.get("error", "获取失物招领失败")}
+    return {"items": res.get("data", []), "error": None}
+
 def tui_lostfound_paginated():
     server_page = 1
     page_size = 6
@@ -3231,20 +3294,13 @@ def tui_lostfound_paginated():
         if server_page not in cached_pages:
             os.system('cls' if os.name == 'nt' else 'clear')
             print(f"\n{C_CYAN}[i] 正在获取失物招领记录 (第 {server_page} 页)...{C_RESET}")
-            status, body, _ = make_request(f"/lostAndFound/lostAndFoundList/?page={server_page}", method="GET", follow_redirects=True)
-            items = []
-            if status == 200:
-                html_content = body.decode("utf-8", errors="ignore")
-                matches = re.findall(r'<div class="ArticleTitle">\s*<a href="/lostAndFound/lostAndFoundDetail/(\d+)/"[^>]*>(.*?)</a>\s*</div>.*?<div class="ArticleTime">(.*?)</div>', html_content, re.DOTALL)
-                for m_id, title_raw, time_raw in matches:
-                    items.append({
-                        "id": m_id,
-                        "title": clean_html(title_raw),
-                        "date": clean_html(time_raw)
-                    })
-            cached_pages[server_page] = items
+            res_obj = fetch_lostfound_data(server_page)
+            cached_pages[server_page] = res_obj
         else:
-            items = cached_pages[server_page]
+            res_obj = cached_pages[server_page]
+            
+        items = res_obj.get("items", [])
+        err = res_obj.get("error")
             
         total_subpages = max(1, (len(items) + page_size - 1) // page_size) if items else 1
         if subpage >= total_subpages:
@@ -3260,36 +3316,48 @@ def tui_lostfound_paginated():
         print(render_row(f"{C_CYAN}{C_BOLD}🔍 校园失物招领 (Lost & Found){C_RESET}", "center"))
         print(render_box_line("├", "─", "┤"))
         page_info = f"{C_BOLD}[页码]{C_RESET} 第 {server_page} 页 · 分屏 {subpage+1}/{total_subpages} (本屏 {len(cur_batch)} 条 / 共 {len(items)} 条)"
-        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {C_GREEN}● 就绪{C_RESET}"))
+        status_disp = f"{C_GREEN}● 就绪{C_RESET}" if not err else f"{C_RED}● 异常{C_RESET}"
+        print(render_row(f"{page_info}    {C_BOLD}[状态]{C_RESET} {status_disp}"))
         print(render_box_line("├", "─", "┤"))
         
-        if not items:
-            print(render_row(f"{C_YELLOW}当前暂无失物招领记录或未连接到校园网{C_RESET}", "center"))
-            for _ in range(10):
+        if err:
+            print(render_row(f"{C_RED}⚠️ {err}{C_RESET}", "center"))
+            print(render_row(f"{C_GREY}提示: 请检查校园内网连接或在主菜单按 1 重新登录{C_RESET}", "center"))
+            for _ in range(8):
+                print(render_row(""))
+        elif not items:
+            print(render_row(f"{C_YELLOW}当前失物招领第 {server_page} 页暂无更多数据{C_RESET}", "center"))
+            for _ in range(9):
                 print(render_row(""))
         else:
             for idx, item in enumerate(cur_batch):
                 num_tag = f"[{start_idx + idx + 1:02d}]"
                 l_id = item.get("id", "")
                 title = item.get("title", "未命名物品")
+                cat = item.get("category", "")
+                reporter = item.get("reporter", "")
                 date = item.get("date", "")
+                status = item.get("status", "")
+                cat_prefix = f"[{cat}] " if cat else ""
+                disp_title = f"{cat_prefix}{title}"
                 max_w = 46
-                if get_visual_width(title) > max_w:
+                if get_visual_width(disp_title) > max_w:
                     tr = ""
                     w = 0
-                    for ch in title:
+                    for ch in disp_title:
                         cw = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
                         if w + cw > max_w - 3:
                             break
                         tr += ch
                         w += cw
-                    title = tr + "..."
+                    disp_title = tr + "..."
+                status_tag = f"{C_YELLOW}[{status}]{C_RESET}" if status else ""
                 if idx == selected_idx:
-                    l1 = f"{C_GREEN}{C_BOLD}▶ {num_tag} [{l_id}] {title}{C_RESET}"
-                    l2 = f"        登记时间: {C_GREY}{date}{C_RESET}"
+                    l1 = f"{C_GREEN}{C_BOLD}▶ {num_tag} [{l_id}] {disp_title}{C_RESET}"
+                    l2 = f"        登记人: {C_CYAN}{reporter}{C_RESET}    时间: {C_GREY}{date}{C_RESET}  {status_tag}"
                 else:
-                    l1 = f"  {C_GREY}{num_tag}{C_RESET} [{l_id}] {title}"
-                    l2 = f"        登记时间: {C_GREY}{date}{C_RESET}"
+                    l1 = f"  {C_GREY}{num_tag}{C_RESET} [{l_id}] {disp_title}"
+                    l2 = f"        登记人: {C_GREY}{reporter}{C_RESET}    时间: {C_GREY}{date}{C_RESET}  {status_tag}"
                 print(render_row(l1))
                 print(render_row(l2))
             for _ in range((page_size - len(cur_batch)) * 2):
@@ -3316,7 +3384,7 @@ def tui_lostfound_paginated():
             elif subpage < total_subpages - 1:
                 subpage += 1
                 selected_idx = 0
-            else:
+            elif cur_batch:
                 server_page += 1
                 subpage = 0
                 selected_idx = 0
@@ -3324,7 +3392,7 @@ def tui_lostfound_paginated():
             if subpage < total_subpages - 1:
                 subpage += 1
                 selected_idx = 0
-            else:
+            elif cur_batch:
                 server_page += 1
                 subpage = 0
                 selected_idx = 0
