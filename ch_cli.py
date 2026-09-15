@@ -630,6 +630,63 @@ def render_html_content(html):
     md_text = render_html_to_markdown(html)
     return colorize_markdown(md_text)
 
+def clean_content_html(raw_html):
+    """
+    清洗并规范化详情正文 HTML，将相对图片与超链接补齐为校园内网绝对路径，
+    并提取包含的所有正文图片列表。
+    """
+    if not raw_html:
+        return "", []
+        
+    s = re.sub(r'<script[^>]*>.*?</script>', '', raw_html, flags=re.DOTALL | re.IGNORECASE)
+    s = re.sub(r'<style[^>]*>.*?</style>', '', s, flags=re.DOTALL | re.IGNORECASE)
+    
+    images = []
+    
+    def replace_img(match):
+        tag = match.group(0)
+        src_m = re.search(r'src=["\'](.*?)["\']', tag, re.IGNORECASE)
+        if not src_m:
+            return tag
+        src = src_m.group(1).strip()
+        if any(k in src for k in ("Logo", "newFunc", "sydw")):
+            return ""
+        full_url = src
+        if not full_url.startswith("http"):
+            if full_url.startswith("/"):
+                full_url = f"{BASE_URL}{full_url}"
+            else:
+                full_url = f"{BASE_URL}/{full_url}"
+                
+        alt_m = re.search(r'alt=["\'](.*?)["\']', tag, re.IGNORECASE)
+        alt = alt_m.group(1).strip() if alt_m else ""
+        fn = urllib.parse.unquote(full_url.split('/')[-1].split('?')[0])
+        
+        if not any(item["url"] == full_url for item in images):
+            images.append({"url": full_url, "name": fn, "alt": alt or fn})
+            
+        svg_fallback = "data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'320\' height=\'110\' viewBox=\'0 0 320 110\'><rect width=\'100%25\' height=\'100%25\' fill=\'%23f8fafc\' stroke=\'%23cbd5e1\' stroke-dasharray=\'4\' rx=\'8\'/><text x=\'50%25\' y=\'45%25\' dominant-baseline=\'middle\' text-anchor=\'middle\' fill=\'%2364748b\' font-size=\'13\' font-family=\'sans-serif\'>🖼️ 校园内网图片</text><text x=\'50%25\' y=\'72%25\' dominant-baseline=\'middle\' text-anchor=\'middle\' fill=\'%2394a3b8\' font-size=\'11\' font-family=\'sans-serif\'>（请连接春晖内网加载查看）</text></svg>"
+        return f'<img src="{full_url}" alt="{alt}" loading="lazy" class="rich-content-img" onclick="openLightbox(\'{full_url}\', \'{alt or fn}\')" onerror="this.onerror=null; this.src=\'{svg_fallback}\';" />'
+        
+    s = re.sub(r'<img[^>]*>', replace_img, s, flags=re.IGNORECASE)
+    
+    def replace_a(match):
+        tag = match.group(0)
+        href_m = re.search(r'href=["\'](.*?)["\']', tag, re.IGNORECASE)
+        if not href_m:
+            return tag
+        href = href_m.group(1).strip()
+        if not href or href == "#" or "javascript:" in href:
+            return tag
+        if not href.startswith("http"):
+            full_href = f"{BASE_URL}{href}" if href.startswith("/") else f"{BASE_URL}/{href}"
+            return tag[:href_m.start(1)] + full_href + tag[href_m.end(1):]
+        return tag
+        
+    s = re.sub(r'<a[^>]*>', replace_a, s, flags=re.IGNORECASE)
+    
+    return s.strip(), images
+
 def extract_attachment_links(html_content):
     attachment_links = []
     links = re.findall(r'href=["\'](.*?)["\']', html_content)
@@ -1002,8 +1059,10 @@ def fetch_message_detail(msg_id):
     content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>\s*</div>', html_content, re.DOTALL)
     if not content_m:
         content_m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
-    if content_m:
-        content = render_html_content(content_m.group(1))
+    raw_content_html = content_m.group(1) if content_m else ""
+    if raw_content_html:
+        content = render_html_content(raw_content_html)
+    content_html, content_images = clean_content_html(raw_content_html)
             
     recipients_all = "无"
     rec1_m = re.search(r'id="multiCollapseExample1">\s*<div class="card card-body">\s*(.*?)\s*</div>', html_content, re.DOTALL)
@@ -1021,6 +1080,13 @@ def fetch_message_detail(msg_id):
         fname = urllib.parse.unquote(att_url.split('/')[-1].split('?')[0])
         attachments.append({"name": fname, "url": att_url})
         
+    images = list(content_images)
+    for att in attachments:
+        att_url = att["url"]
+        if any(att_url.lower().endswith(ext) for ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')):
+            if not any(item["url"] == att_url for item in images):
+                images.append({"url": att_url, "name": att["name"], "alt": att["name"]})
+        
     return {
         "success": True,
         "data": {
@@ -1029,6 +1095,8 @@ def fetch_message_detail(msg_id):
             "sender": sender,
             "time": send_time,
             "content": content,
+            "content_html": content_html,
+            "images": images,
             "recipients_all": recipients_all,
             "recipients_unread": recipients_unread,
             "attachments": attachments
@@ -1088,8 +1156,10 @@ def fetch_news_detail(article_id):
         
     content = ""
     content_m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
-    if content_m:
-        content = render_html_content(content_m.group(1))
+    raw_content_html = content_m.group(1) if content_m else ""
+    if raw_content_html:
+        content = render_html_content(raw_content_html)
+    content_html, content_images = clean_content_html(raw_content_html)
         
     attachment_links = extract_attachment_links(html_content)
     attachments = []
@@ -1097,6 +1167,13 @@ def fetch_news_detail(article_id):
         fname = urllib.parse.unquote(att_url.split('/')[-1].split('?')[0])
         attachments.append({"name": fname, "url": att_url})
         
+    images = list(content_images)
+    for att in attachments:
+        att_url = att["url"]
+        if any(att_url.lower().endswith(ext) for ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')):
+            if not any(item["url"] == att_url for item in images):
+                images.append({"url": att_url, "name": att["name"], "alt": att["name"]})
+
     return {
         "success": True,
         "data": {
@@ -1105,6 +1182,8 @@ def fetch_news_detail(article_id):
             "source": source,
             "time": pub_time,
             "content": content,
+            "content_html": content_html,
+            "images": images,
             "attachments": attachments
         }
     }
@@ -1205,14 +1284,21 @@ def fetch_hygiene_detail(record_id):
     html_content = body.decode("utf-8", errors="ignore")
     desc = "未知违纪描述"
     m = re.search(r'<div class="ArticleContent[^>]*>(.*?)</div>', html_content, re.DOTALL)
-    if m:
-        desc = render_html_content(m.group(1))
+    raw_content_html = m.group(1) if m else ""
+    if raw_content_html:
+        desc = render_html_content(raw_content_html)
+    content_html, content_images = clean_content_html(raw_content_html)
+    
     media_urls = []
+    images = list(content_images)
     for img in re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_content):
         if not any(k in img for k in ("Logo", "newFunc", "sydw")):
             full = img if img.startswith("http") else f"{BASE_URL}{img}" if img.startswith("/") else f"{BASE_URL}/{img}"
             if full not in [item["url"] for item in media_urls]:
                 media_urls.append({"type": "image", "url": full})
+            fn = urllib.parse.unquote(full.split('/')[-1].split('?')[0])
+            if not any(item["url"] == full for item in images):
+                images.append({"url": full, "name": fn, "alt": fn})
     for vid in re.findall(r'<video[^>]+src=["\'](.*?)["\']', html_content):
         full = vid if vid.startswith("http") else f"{BASE_URL}{vid}" if vid.startswith("/") else f"{BASE_URL}/{vid}"
         if full not in [item["url"] for item in media_urls]:
@@ -1230,6 +1316,9 @@ def fetch_hygiene_detail(record_id):
         "data": {
             "id": str(record_id),
             "desc": desc,
+            "content": desc,
+            "content_html": content_html,
+            "images": images,
             "media_urls": media_urls,
             "recipients_all": recipients_all,
             "recipients_unread": recipients_unread
@@ -1394,14 +1483,20 @@ def fetch_lostfound_detail(item_id):
         pub_time = m.group(1).strip()
     content = ""
     m = re.search(r'<div class="ArticleContent(?:\s+[^>]*|)\s*>(.*?)</div>', html_content, re.DOTALL)
-    if m:
-        content = render_html_content(m.group(1))
+    raw_content_html = m.group(1) if m else ""
+    if raw_content_html:
+        content = render_html_content(raw_content_html)
+    content_html, content_images = clean_content_html(raw_content_html)
     media_urls = []
+    images = list(content_images)
     for img in re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_content):
         if "Logo" not in img and "newFunc" not in img and "sydw" not in img:
             full = img if img.startswith("http") else f"{BASE_URL}{img}" if img.startswith("/") else f"{BASE_URL}/{img}"
             if full not in media_urls:
                 media_urls.append(full)
+            fn = urllib.parse.unquote(full.split('/')[-1].split('?')[0])
+            if not any(item["url"] == full for item in images):
+                images.append({"url": full, "name": fn, "alt": fn})
     for vid in re.findall(r'<video[^>]+src=["\'](.*?)["\']', html_content):
         full = vid if vid.startswith("http") else f"{BASE_URL}{vid}" if vid.startswith("/") else f"{BASE_URL}/{vid}"
         if full not in media_urls:
@@ -1413,6 +1508,9 @@ def fetch_lostfound_detail(item_id):
     for u in media_urls:
         fn = urllib.parse.unquote(u.split('/')[-1].split('?')[0])
         attachments.append({"name": fn, "url": u})
+        if any(u.lower().endswith(ext) for ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')):
+            if not any(item["url"] == u for item in images):
+                images.append({"url": u, "name": fn, "alt": fn})
     return {
         "success": True,
         "data": {
@@ -1422,6 +1520,8 @@ def fetch_lostfound_detail(item_id):
             "reviewer": reviewer,
             "time": pub_time,
             "content": content,
+            "content_html": content_html,
+            "images": images,
             "media_urls": media_urls,
             "attachments": attachments
         }

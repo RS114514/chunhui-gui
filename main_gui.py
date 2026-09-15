@@ -269,14 +269,20 @@ class ChunhuiApi:
         }
 
         raw_weather = ch_cli.fetch_daily_weather() if (ch_cli and hasattr(ch_cli, "fetch_daily_weather")) else {}
-        weather = {
-            "online": raw_weather.get("online", False),
-            "temp": str(raw_weather.get("temp", "24")),
-            "weather": raw_weather.get("desc") or raw_weather.get("weather") or "晴间多云",
-            "wind": raw_weather.get("wind", "微风"),
-            "humidity": raw_weather.get("humidity", "65%"),
-            "source": "campus_api" if raw_weather.get("online") else "fallback"
-        }
+        if raw_weather.get("online"):
+            weather = {
+                "online": True,
+                "temp": raw_weather.get("temp"),
+                "app_temp": raw_weather.get("app_temp"),
+                "desc": raw_weather.get("desc", ""),
+                "aqi": raw_weather.get("aqi", ""),
+                "range": raw_weather.get("range", "")
+            }
+        else:
+            weather = {
+                "online": False,
+                "message": "离校模式 (未连接校园内网气象站 10.181.201.165:1908)"
+            }
 
         rec_quotes = ch_cli.get_daily_recommendations(count=3) if (ch_cli and hasattr(ch_cli, "get_daily_recommendations")) else []
 
@@ -579,57 +585,282 @@ table.data-table tr:hover td {
   display: none;
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(2px);
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(4px);
   z-index: 1000;
   align-items: center;
   justify-content: center;
 }
 .modal-card {
-  width: 620px;
-  max-width: 92vw;
-  max-height: 86vh;
+  width: 820px;
+  max-width: 94vw;
+  max-height: 88vh;
   background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
+  border-radius: 16px;
+  box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  animation: modalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes modalFadeIn {
+  from { opacity: 0; transform: scale(0.97) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
 }
 .modal-header {
-  padding: 12px 18px;
+  padding: 14px 22px;
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
   align-items: center;
   background: #f8fafc;
 }
-.modal-header h3 { font-size: 14.5px; font-weight: 700; color: #0f172a; }
+.modal-header h3 { font-size: 15.5px; font-weight: 700; color: #0f172a; margin: 0; }
+.modal-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.modal-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.modal-tool-btn:hover {
+  background: #f1f5f9;
+  color: var(--primary);
+  border-color: #cbd5e1;
+}
 .modal-close {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: bold;
   color: #94a3b8;
   cursor: pointer;
   border: none;
   background: none;
-  padding: 0 4px;
+  padding: 0 6px;
+  line-height: 1;
 }
 .modal-close:hover { color: #0f172a; }
 .modal-body {
-  padding: 18px 20px;
+  padding: 22px 26px;
   overflow-y: auto;
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: var(--modal-content-fs, 14px);
+  line-height: 1.75;
   color: #334155;
   user-select: text;
 }
 .modal-footer {
-  padding: 10px 18px;
+  padding: 12px 22px;
   border-top: 1px solid var(--border);
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   background: #f8fafc;
+}
+
+/* 富文本排版与正文图片 */
+.rich-article-body {
+  line-height: 1.8;
+  color: #1e293b;
+  word-break: break-word;
+}
+.rich-article-body p {
+  margin-bottom: 12px;
+}
+.rich-content-img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  margin: 10px 0;
+  cursor: zoom-in;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  display: inline-block;
+}
+.rich-content-img:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 15px -3px rgba(0, 0, 0, 0.15);
+}
+
+/* 详情 Meta 胶囊标签栏 */
+.detail-meta-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  background: #f1f5f9;
+  color: #475569;
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+.detail-chip strong {
+  color: #0f172a;
+}
+
+/* 附件网格卡片 */
+.attach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.attach-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+.attach-card:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+.attach-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+.attach-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.attach-name {
+  font-size: 12.5px;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+.attach-btn {
+  font-size: 11.5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--primary);
+  color: #fff;
+  text-decoration: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  border: none;
+}
+.attach-btn:hover {
+  opacity: 0.9;
+}
+
+/* 图片缩略图网格 */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.gallery-item {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #f1f5f9;
+  cursor: pointer;
+}
+.gallery-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.25s ease;
+}
+.gallery-item:hover img {
+  transform: scale(1.05);
+}
+.gallery-badge {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(15, 23, 42, 0.7);
+  color: #fff;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* 全局 LightBox 预览模态框 */
+.lightbox-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 2000;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+.lightbox-container {
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-container img {
+  max-width: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+}
+.lightbox-toolbar {
+  margin-top: 14px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.lightbox-btn {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+}
+.lightbox-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+.lightbox-caption {
+  color: #e2e8f0;
+  font-size: 13px;
+  margin-bottom: 8px;
+  max-width: 80vw;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 课表表格矩阵样式 */
@@ -1045,16 +1276,16 @@ table.data-table tr:hover td {
             <span class="lunar-badge" id="briefing-lunar">计算农历中...</span>
           </div>
         </div>
-        <div class="briefing-weather-card">
+        <div class="briefing-weather-card" id="briefing-weather-box">
           <div>
-            <div style="font-size:11.5px; font-weight:700; color:#1d4ed8; text-transform:uppercase; letter-spacing:0.5px;">上虞气象与环境感知</div>
+            <div style="font-size:11.5px; font-weight:700; color:#1d4ed8; text-transform:uppercase; letter-spacing:0.5px;">白马湖微气象观测</div>
             <div style="display:flex; align-items:baseline; gap:8px;">
-              <span class="weather-temp" id="briefing-weather-temp">--°C</span>
-              <span class="weather-desc" id="briefing-weather-desc">正在拉取...</span>
+              <span class="weather-temp" id="briefing-weather-temp">--</span>
+              <span class="weather-desc" id="briefing-weather-desc">检测内网气象服务中...</span>
             </div>
           </div>
           <div class="weather-detail" id="briefing-weather-detail">
-            风向风级：-- | 湿度：-- | 数据源：正在连接
+            数据源：正在探测校内气象节点 (10.181.201.165:1908)
           </div>
         </div>
       </div>
@@ -1425,12 +1656,30 @@ table.data-table tr:hover td {
   <div class="modal-card">
     <div class="modal-header">
       <h3 id="modal-title">详情查看</h3>
-      <button class="modal-close" onclick="closeModal()">&times;</button>
+      <div class="modal-tools">
+        <button class="modal-tool-btn" onclick="changeContentFontSize(-1)" title="缩小正文字号">A-</button>
+        <button class="modal-tool-btn" onclick="changeContentFontSize(0)" title="恢复默认字号">标准</button>
+        <button class="modal-tool-btn" onclick="changeContentFontSize(1)" title="放大正文字号">A+</button>
+        <button class="modal-tool-btn" onclick="copyModalContent()" id="modal-copy-btn" title="复制纯文本内容">📋 复制</button>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
     </div>
     <div class="modal-body" id="modal-content"></div>
     <div class="modal-footer" id="modal-footer">
       <button class="btn" onclick="closeModal()">关闭</button>
     </div>
+  </div>
+</div>
+
+<!-- 全局全屏大图预览 LightBox -->
+<div id="lightbox-overlay" class="lightbox-overlay" onclick="closeLightbox(event)">
+  <div class="lightbox-caption" id="lightbox-caption"></div>
+  <div class="lightbox-container">
+    <img id="lightbox-img" src="" alt="预览大图" />
+  </div>
+  <div class="lightbox-toolbar">
+    <button class="lightbox-btn" onclick="downloadLightboxImage()">⬇️ 保存原图</button>
+    <button class="lightbox-btn" onclick="closeLightbox()">✕ 关闭</button>
   </div>
 </div>
 
@@ -1580,6 +1829,145 @@ function renderEmptyState(containerId, tip) {
   `;
 }
 
+let currentContentFontSize = 14;
+function changeContentFontSize(delta) {
+  if (delta === 0) {
+    currentContentFontSize = 14;
+  } else {
+    currentContentFontSize = Math.min(22, Math.max(12, currentContentFontSize + delta * 2));
+  }
+  const body = document.getElementById('modal-content');
+  if (body) {
+    body.style.setProperty('--modal-content-fs', currentContentFontSize + 'px');
+    body.style.fontSize = currentContentFontSize + 'px';
+  }
+}
+
+let activeModalRawText = '';
+function copyModalContent() {
+  const textToCopy = activeModalRawText || document.getElementById('modal-content').innerText;
+  if (!textToCopy) return;
+  navigator.clipboard.writeText(textToCopy).then(() => {
+    const btn = document.getElementById('modal-copy-btn');
+    if (!btn) return;
+    const oldText = btn.innerText;
+    btn.innerText = '✓ 已复制';
+    btn.style.color = 'var(--success)';
+    setTimeout(() => {
+      btn.innerText = oldText;
+      btn.style.color = '';
+    }, 1800);
+  }).catch(err => {
+    console.error('复制失败:', err);
+  });
+}
+
+function renderAttachmentCards(attachments) {
+  if (!attachments || attachments.length === 0) return '';
+  const isMulti = attachments.length >= 2;
+  const cards = attachments.map(a => {
+    const ext = (a.name || '').split('.').pop().toLowerCase();
+    let icon = '📄';
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)) icon = '🖼️';
+    else if (['doc', 'docx'].includes(ext)) icon = '📝';
+    else if (['xls', 'xlsx'].includes(ext)) icon = '📊';
+    else if (['ppt', 'pptx'].includes(ext)) icon = '📑';
+    else if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) icon = '📦';
+    else if (['pdf'].includes(ext)) icon = '📕';
+    else if (['mp4', 'mkv', 'mov', 'avi'].includes(ext)) icon = '🎬';
+
+    const safeUrl = (a.url || '').replace(/'/g, "\\'");
+    const safeName = (a.name || 'file').replace(/'/g, "\\'");
+    return `
+      <div class="attach-card">
+        <div class="attach-info" title="${a.name}">
+          <span class="attach-icon">${icon}</span>
+          <span class="attach-name">${a.name}</span>
+        </div>
+        <button class="attach-btn" onclick="downloadRemoteFile('${safeUrl}', '${safeName}')">下载</button>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <strong style="color:var(--primary); font-size:13px;">📎 附件列表 (${attachments.length})：</strong>
+        ${isMulti ? `<button class="btn" style="padding:3px 8px; font-size:11.5px;" onclick='downloadAllAttachments(${JSON.stringify(attachments)})'>⬇️ 全部下载</button>` : ''}
+      </div>
+      <div class="attach-grid">${cards}</div>
+    </div>
+  `;
+}
+
+function renderGalleryGrid(images) {
+  if (!images || images.length === 0) return '';
+  const items = images.map((img, idx) => {
+    const safeUrl = (img.url || '').replace(/'/g, "\\'");
+    const safeAlt = (img.alt || img.name || 'image').replace(/'/g, "\\'");
+    return `
+      <div class="gallery-item" onclick="openLightbox('${safeUrl}', '${safeAlt}')" title="${img.alt || img.name}">
+        <img src="${img.url}" loading="lazy" alt="${img.alt || img.name}" />
+        <span class="gallery-badge">${idx + 1}/${images.length}</span>
+      </div>
+    `;
+  }).join('');
+  return `
+    <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--border);">
+      <strong style="color:var(--primary); font-size:13px;">📸 相关图集 / 现场抓拍快照 (${images.length})：</strong>
+      <div class="gallery-grid">${items}</div>
+    </div>
+  `;
+}
+
+function downloadAllAttachments(attachments) {
+  if (!attachments || !attachments.length) return;
+  attachments.forEach((att, idx) => {
+    setTimeout(() => {
+      downloadRemoteFile(att.url, att.name);
+    }, idx * 400);
+  });
+}
+
+let currentLightboxUrl = '';
+let currentLightboxName = '';
+function openLightbox(url, name) {
+  currentLightboxUrl = url;
+  currentLightboxName = name || 'image.jpg';
+  document.getElementById('lightbox-img').src = url;
+  document.getElementById('lightbox-caption').innerText = name || '';
+  document.getElementById('lightbox-overlay').style.display = 'flex';
+}
+
+function closeLightbox(e) {
+  if (!e || e.target === document.getElementById('lightbox-overlay') || (e.target && e.target.classList && e.target.classList.contains('lightbox-btn')) || (e.target && e.target.innerText && e.target.innerText.includes('关闭'))) {
+    document.getElementById('lightbox-overlay').style.display = 'none';
+    document.getElementById('lightbox-img').src = '';
+  }
+}
+
+function downloadLightboxImage() {
+  if (currentLightboxUrl) {
+    downloadRemoteFile(currentLightboxUrl, currentLightboxName);
+  }
+}
+
+// 监听 ESC 键关闭 LightBox 或详情模态框
+document.addEventListener('keydown', function(event) {
+  if (event.key === 'Escape') {
+    const lb = document.getElementById('lightbox-overlay');
+    if (lb && lb.style.display === 'flex') {
+      closeLightbox();
+      return;
+    }
+    const modal = document.getElementById('modal-overlay');
+    if (modal && modal.style.display === 'flex') {
+      closeModal();
+      return;
+    }
+  }
+});
+
 function openModal(title, htmlContent, footerHtml) {
   document.getElementById('modal-title').innerText = title;
   document.getElementById('modal-content').innerHTML = htmlContent;
@@ -1595,6 +1983,7 @@ function openModal(title, htmlContent, footerHtml) {
 function closeModal(e) {
   if (!e || e.target === document.getElementById('modal-overlay') || e.target.classList.contains('modal-close') || e.target.innerText === '关闭') {
     document.getElementById('modal-overlay').style.display = 'none';
+    activeModalRawText = '';
   }
 }
 
@@ -1794,15 +2183,20 @@ async function loadBriefing() {
       document.getElementById('briefing-lunar').innerText = res.lunar ? ('岁次 ' + res.lunar) : '春晖校历';
 
       const w = res.weather || {};
-      const tempStr = (w.temp !== undefined && w.temp !== '') ? `${w.temp}°C` : '--°C';
-      document.getElementById('briefing-weather-temp').innerText = tempStr;
-      document.getElementById('briefing-weather-desc').innerText = w.weather || '晴间多云';
-      
-      let detailParts = [];
-      if (w.wind) detailParts.push(`风况：${w.wind}`);
-      if (w.humidity) detailParts.push(`相对湿度：${w.humidity}`);
-      if (w.source) detailParts.push(w.source === 'campus_api' ? '气象站：校内专线' : '气象站：公共气象服务');
-      document.getElementById('briefing-weather-detail').innerText = detailParts.join(' | ') || '上虞气象观测站点正常';
+      if (w.online) {
+        document.getElementById('briefing-weather-temp').innerText = (w.temp !== undefined ? `${w.temp}°C` : '--');
+        document.getElementById('briefing-weather-desc').innerText = w.desc || '校园气象站在线';
+        
+        let detailParts = [];
+        if (w.app_temp !== undefined) detailParts.push(`体感：${w.app_temp}°C`);
+        if (w.range) detailParts.push(`温差：${w.range}`);
+        if (w.aqi) detailParts.push(`空气质量：${w.aqi}`);
+        document.getElementById('briefing-weather-detail').innerText = detailParts.join(' | ') || '白马湖实时微气象监测中';
+      } else {
+        document.getElementById('briefing-weather-temp').innerText = '--';
+        document.getElementById('briefing-weather-desc').innerText = '离校模式 / 气象站未连接';
+        document.getElementById('briefing-weather-detail').innerText = '未连接校园内网气象站 (10.181.201.165:1908)，校外不显示推测天气';
+      }
 
       const s = res.sentence || {};
       document.getElementById('quote-hero-text').innerText = s.quote || '学而不思则罔，思而不学则殆。';
@@ -1950,6 +2344,7 @@ async function loadInbox(page) {
 
 async function showMessageDetail(msgId) {
   openModal('信件详情', '正在获取详情数据...');
+  activeModalRawText = '';
   try {
     const res = await window.pywebview.api.get_message_detail(msgId);
     if (!res.success) {
@@ -1957,24 +2352,30 @@ async function showMessageDetail(msgId) {
       return;
     }
     const d = res.data;
-    let attHtml = '';
-    if (d.attachments && d.attachments.length > 0) {
-      attHtml = `<div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border);">
-        <strong style="color:var(--primary);">📎 关联附件列表：</strong>
-        <div style="margin-top:6px;">
-          ${d.attachments.map(a => `<div style="margin:4px 0;"><a href="javascript:void(0)" onclick="downloadRemoteFile('${a.url}', '${a.name}')" style="color:var(--primary); text-decoration:underline;">${a.name}</a></div>`).join('')}
-        </div>
-      </div>`;
+    activeModalRawText = `${d.title}\n发件人：${d.sender} | 时间：${d.time}\n\n${d.content}\n\n全体收件人：${d.recipients_all}\n未阅收件人：${d.recipients_unread}`;
+
+    let contentHtml = '';
+    if (d.content_html) {
+      contentHtml = `<div class="rich-article-body">${d.content_html}</div>`;
+    } else {
+      contentHtml = `<div class="rich-article-body" style="white-space:pre-wrap;">${d.content || '（信件无正文文字）'}</div>`;
     }
+
+    const attHtml = renderAttachmentCards(d.attachments);
+    const galleryHtml = (d.images && d.images.length > 0 && !d.content_html) ? renderGalleryGrid(d.images) : '';
+
     document.getElementById('modal-content').innerHTML = `
-      <div style="font-size:16px; font-weight:bold; margin-bottom:8px; color:#0f172a;">${d.title}</div>
-      <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px; border-bottom:1px solid var(--border); padding-bottom:8px;">
-        发件人：<strong>${d.sender}</strong> &nbsp;|&nbsp; 发送时间：${d.time}
+      <div style="font-size:18px; font-weight:bold; margin-bottom:12px; color:#0f172a; line-height:1.4;">${d.title}</div>
+      <div class="detail-meta-bar">
+        <div class="detail-chip">发件人：<strong>${d.sender}</strong></div>
+        <div class="detail-chip">发送时间：<strong>${d.time}</strong></div>
+        <div class="detail-chip">信件编号：<strong>${d.id}</strong></div>
       </div>
-      <div style="line-height:1.7; font-size:13px; white-space:pre-wrap;">${d.content || '（信件无正文文字）'}</div>
-      <div style="margin-top:16px; font-size:12px; color:var(--text-muted); line-height:1.6; background:#f8fafc; padding:10px; border-radius:6px;">
+      ${contentHtml}
+      ${galleryHtml}
+      <div style="margin-top:16px; font-size:12px; color:var(--text-muted); line-height:1.6; background:#f8fafc; padding:12px 14px; border-radius:8px; border:1px solid #e2e8f0;">
         <div><strong>全体收件人：</strong>${d.recipients_all}</div>
-        <div style="margin-top:4px;"><strong>未阅收件人：</strong><span style="color:var(--danger);">${d.recipients_unread}</span></div>
+        <div style="margin-top:6px;"><strong>未阅收件人：</strong><span style="color:var(--danger);">${d.recipients_unread}</span></div>
       </div>
       ${attHtml}
     `;
@@ -2035,6 +2436,7 @@ async function loadNews(column, page) {
 
 async function showNewsDetail(artId) {
   openModal('文章详情', '正在获取内容...');
+  activeModalRawText = '';
   try {
     const res = await window.pywebview.api.get_news_detail(artId);
     if (!res.success) {
@@ -2042,21 +2444,27 @@ async function showNewsDetail(artId) {
       return;
     }
     const d = res.data;
-    let attHtml = '';
-    if (d.attachments && d.attachments.length > 0) {
-      attHtml = `<div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border);">
-        <strong style="color:var(--primary);">📎 附件下载：</strong>
-        <div style="margin-top:6px;">
-          ${d.attachments.map(a => `<div style="margin:4px 0;"><a href="javascript:void(0)" onclick="downloadRemoteFile('${a.url}', '${a.name}')" style="color:var(--primary); text-decoration:underline;">${a.name}</a></div>`).join('')}
-        </div>
-      </div>`;
+    activeModalRawText = `${d.title}\n来源：${d.source} | 时间：${d.time}\n\n${d.content}`;
+
+    let contentHtml = '';
+    if (d.content_html) {
+      contentHtml = `<div class="rich-article-body">${d.content_html}</div>`;
+    } else {
+      contentHtml = `<div class="rich-article-body" style="white-space:pre-wrap;">${d.content || '（暂无详细正文内容）'}</div>`;
     }
+
+    const attHtml = renderAttachmentCards(d.attachments);
+    const galleryHtml = (d.images && d.images.length > 0 && !d.content_html) ? renderGalleryGrid(d.images) : '';
+
     document.getElementById('modal-content').innerHTML = `
-      <div style="font-size:16px; font-weight:bold; margin-bottom:8px; color:#0f172a;">${d.title}</div>
-      <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px; border-bottom:1px solid var(--border); padding-bottom:8px;">
-        来源：${d.source} &nbsp;|&nbsp; 发布时间：${d.time}
+      <div style="font-size:18px; font-weight:bold; margin-bottom:12px; color:#0f172a; line-height:1.4;">${d.title}</div>
+      <div class="detail-meta-bar">
+        <div class="detail-chip">来源：<strong>${d.source}</strong></div>
+        <div class="detail-chip">发布时间：<strong>${d.time}</strong></div>
+        <div class="detail-chip">文章编号：<strong>${d.id}</strong></div>
       </div>
-      <div style="line-height:1.8; font-size:13px; white-space:pre-wrap;">${d.content || '（暂无详细正文内容）'}</div>
+      ${contentHtml}
+      ${galleryHtml}
       ${attHtml}
     `;
   } catch (e) {
@@ -2202,7 +2610,8 @@ async function loadHygiene(page) {
 }
 
 async function showHygieneDetail(recId) {
-  openModal('卫生考评详情', '正在拉取多媒体现场记录...');
+  openModal('纪律卫生考评详情', '正在拉取多媒体现场记录...');
+  activeModalRawText = '';
   try {
     const res = await window.pywebview.api.get_hygiene_detail(recId);
     if (!res.success) {
@@ -2210,29 +2619,54 @@ async function showHygieneDetail(recId) {
       return;
     }
     const d = res.data;
+    activeModalRawText = `[编号: ${d.id}] 纪律卫生通报\n${d.desc || d.content}\n\n通报涉及人员：${d.recipients_all}\n未阅人员：${d.recipients_unread}`;
+
+    let contentHtml = '';
+    if (d.content_html) {
+      contentHtml = `<div class="rich-article-body">${d.content_html}</div>`;
+    } else {
+      contentHtml = `<div class="rich-article-body" style="white-space:pre-wrap;">${d.desc || d.content || '（暂无详细违纪通报描述）'}</div>`;
+    }
+
     let mediaHtml = '';
     if (d.media_urls && d.media_urls.length > 0) {
-      mediaHtml = `<div style="margin-top:14px; border-top:1px solid var(--border); padding-top:12px;">
-        <strong style="color:var(--primary);">📸 现场影像资料 (${d.media_urls.length} 项)：</strong>
-        <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:8px;">
-          ${d.media_urls.map(m => {
-            if (m.type === 'image') {
-              return `<a href="javascript:void(0)" onclick="downloadRemoteFile('${m.url}', 'hygiene_${d.id}.jpg')"><img src="${m.url}" style="max-height:120px; border-radius:4px; border:1px solid var(--border);" title="点击保存"></a>`;
-            } else {
-              return `<video src="${m.url}" controls style="max-height:140px; border-radius:4px;"></video>`;
-            }
-          }).join('')}
+      const imgItems = [];
+      const vidItems = [];
+      d.media_urls.forEach((m, idx) => {
+        if (m.type === 'image') {
+          const safeUrl = (m.url || '').replace(/'/g, "\\'");
+          imgItems.push(`
+            <div class="gallery-item" onclick="openLightbox('${safeUrl}', '现场抓拍照片_${idx + 1}')" title="点击放大查看">
+              <img src="${m.url}" loading="lazy" alt="现场抓拍照片" />
+              <span class="gallery-badge">照片 ${idx + 1}</span>
+            </div>
+          `);
+        } else {
+          vidItems.push(`
+            <div style="border-radius:8px; overflow:hidden; border:1px solid var(--border); background:#000; max-width:320px;">
+              <video src="${m.url}" controls style="max-height:180px; width:100%; display:block;"></video>
+            </div>
+          `);
+        }
+      });
+
+      mediaHtml = `
+        <div style="margin-top:16px; border-top:1px solid var(--border); padding-top:14px;">
+          <strong style="color:var(--primary); font-size:13px;">📸 现场抓拍照片与影像凭证 (${d.media_urls.length} 项)：</strong>
+          ${imgItems.length > 0 ? `<div class="gallery-grid" style="margin-top:10px;">${imgItems.join('')}</div>` : ''}
+          ${vidItems.length > 0 ? `<div style="display:flex; flex-wrap:wrap; gap:12px; margin-top:10px;">${vidItems.join('')}</div>` : ''}
         </div>
-      </div>`;
+      `;
     }
+
     document.getElementById('modal-content').innerHTML = `
-      <div style="font-size:14.5px; font-weight:bold; margin-bottom:8px; color:#b91c1c;">⚠️ 纪律卫生通报 [ID: ${d.id}]</div>
-      <div style="line-height:1.7; font-size:13px; background:#fef2f2; border:1px solid #fee2e2; padding:12px; border-radius:6px; margin-bottom:12px;">
-        ${d.desc}
+      <div style="font-size:17px; font-weight:bold; margin-bottom:12px; color:#b91c1c;">⚠️ 纪律卫生违规通报 [编号: ${d.id}]</div>
+      <div style="line-height:1.7; font-size:13.5px; background:#fef2f2; border:1px solid #fee2e2; padding:14px; border-radius:8px; margin-bottom:14px; color:#991b1b;">
+        ${contentHtml}
       </div>
-      <div style="font-size:12px; color:var(--text-muted); line-height:1.6; background:#f8fafc; padding:10px; border-radius:6px;">
-        <div><strong>通报人员：</strong>${d.recipients_all}</div>
-        <div style="margin-top:4px;"><strong>未阅人员：</strong><span style="color:var(--danger);">${d.recipients_unread}</span></div>
+      <div style="font-size:12px; color:var(--text-muted); line-height:1.6; background:#f8fafc; padding:12px 14px; border-radius:8px; border:1px solid #e2e8f0;">
+        <div><strong>通报涉及人员：</strong>${d.recipients_all}</div>
+        <div style="margin-top:6px;"><strong>未阅确认人员：</strong><span style="color:var(--danger);">${d.recipients_unread}</span></div>
       </div>
       ${mediaHtml}
     `;
@@ -2440,6 +2874,7 @@ async function loadLostfound(page) {
 
 async function showLostfoundDetail(itemId) {
   openModal('失物招领详情', '正在拉取招领详情...');
+  activeModalRawText = '';
   try {
     const res = await window.pywebview.api.get_lostfound_detail(itemId);
     if (!res.success) {
@@ -2447,22 +2882,29 @@ async function showLostfoundDetail(itemId) {
       return;
     }
     const d = res.data;
-    let mediaHtml = '';
-    if (d.media && d.media.length > 0) {
-      mediaHtml = `<div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border);">
-        <strong style="color:var(--primary);">📎 关联文件或多媒体：</strong>
-        <div style="margin-top:6px;">
-          ${d.media.map(m => `<div style="margin:4px 0;"><a href="javascript:void(0)" onclick="downloadRemoteFile('${m.url}', '${m.name}')" style="color:var(--primary); text-decoration:underline;">${m.name}</a></div>`).join('')}
-        </div>
-      </div>`;
+    activeModalRawText = `${d.title}\n发布部门：${d.reporter} | 审核人：${d.reviewer} | 时间：${d.time}\n\n${d.content}`;
+
+    let contentHtml = '';
+    if (d.content_html) {
+      contentHtml = `<div class="rich-article-body">${d.content_html}</div>`;
+    } else {
+      contentHtml = `<div class="rich-article-body" style="white-space:pre-wrap;">${d.content || '（暂无详细补充说明）'}</div>`;
     }
+
+    const attHtml = renderAttachmentCards(d.attachments);
+    const galleryHtml = (d.images && d.images.length > 0 && !d.content_html) ? renderGalleryGrid(d.images) : '';
+
     document.getElementById('modal-content').innerHTML = `
-      <div style="font-size:16px; font-weight:bold; margin-bottom:8px; color:#0f172a;">${d.title}</div>
-      <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px; border-bottom:1px solid var(--border); padding-bottom:8px;">
-        发布部门：${d.reporter} &nbsp;|&nbsp; 审核人：${d.reviewer} &nbsp;|&nbsp; 时间：${d.time}
+      <div style="font-size:18px; font-weight:bold; margin-bottom:12px; color:#0f172a; line-height:1.4;">${d.title}</div>
+      <div class="detail-meta-bar">
+        <div class="detail-chip">发布部门：<strong>${d.reporter}</strong></div>
+        <div class="detail-chip">审核人：<strong>${d.reviewer}</strong></div>
+        <div class="detail-chip">发布时间：<strong>${d.time}</strong></div>
+        <div class="detail-chip">物品编号：<strong>${d.id}</strong></div>
       </div>
-      <div style="line-height:1.7; font-size:13px; white-space:pre-wrap;">${d.content || '（暂无详细补充说明）'}</div>
-      ${mediaHtml}
+      ${contentHtml}
+      ${galleryHtml}
+      ${attHtml}
     `;
   } catch (e) {
     document.getElementById('modal-content').innerHTML = `<div style="color:var(--danger);">⚠️ 获取失败: ${e}</div>`;
