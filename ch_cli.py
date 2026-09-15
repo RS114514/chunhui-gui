@@ -19,6 +19,8 @@ import tempfile
 import glob
 import struct
 import webbrowser
+import datetime
+import random
 from html.parser import HTMLParser
 
 BASE_URL = "http://10.181.200.3"
@@ -2083,7 +2085,404 @@ def cmd_lostfound(args):
         print(f"      {C_BLUE}┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄{C_RESET}")
     print(f"{C_GREY}提示: 使用 `python3 ch_cli.py lostfound --show <ID>` 查看招领联系方式等详情。{C_RESET}\n")
 
+# ==============================================================================
+# 模块：白马湖每日简报、课堂抽签点名与校园内网导航
+# ==============================================================================
 
+_LUNAR_TABLE = [
+    0x04bd8,0x04ae0,0x0a570,0x054d5,0x0d260,0x0d950,0x16554,0x056a0,0x09ad0,0x055d2,
+    0x04ae0,0x0a5b6,0x0a4d0,0x0d250,0x1d255,0x0b540,0x0d6a0,0x0ada2,0x095b0,0x14977,
+    0x04970,0x0a4b0,0x0b4b5,0x06a50,0x06d40,0x1ab54,0x02b60,0x09570,0x052f2,0x04970,
+    0x06566,0x0d4a0,0x0ea50,0x06e95,0x05ad0,0x02b60,0x186e3,0x092e0,0x1c8d7,0x0c950,
+    0x0d4a0,0x1d8a6,0x0b550,0x056a0,0x1a5b4,0x025d0,0x092d0,0x0d2b2,0x0a950,0x0b557,
+    0x06ca0,0x0b550,0x15355,0x04da0,0x0a5d0,0x14573,0x052d0,0x0a9a8,0x0e950,0x06aa0,
+    0x0aea6,0x0ab50,0x04b60,0x0aae4,0x0a570,0x05260,0x0f263,0x0d950,0x05b57,0x056a0,
+    0x096d0,0x04dd5,0x04ad0,0x0a4d0,0x0d4d4,0x0d250,0x0d558,0x0b540,0x0b5a0,0x195a6,
+    0x095b0,0x049b0,0x0a974,0x0a4b0,0x0b27a,0x06a50,0x06d40,0x0af46,0x0ab60,0x09570,
+    0x04af5,0x04970,0x064b0,0x074a3,0x0ea50,0x06b58,0x055c0,0x0ab60,0x096d5,0x092e0,
+    0x0c960,0x0d954,0x0d4a0,0x0da50,0x07552,0x056a0,0x0abb7,0x025d0,0x092d0,0x0cab5,
+    0x0a950,0x0b4a0,0x0baa4,0x0ad50,0x055d9,0x04ba0,0x0a5b0,0x15176,0x052b0,0x0a930,
+    0x07954,0x06aa0,0x0ad50,0x05b52,0x04b60,0x0a6e6,0x0a4e0,0x0d260,0x0ea65,0x0d530,
+    0x05aa0,0x076a3,0x096d0,0x04bd7,0x04ad0,0x0a4d0,0x1d0b6,0x0d250,0x0d520,0x0dd45,
+    0x0b5a0,0x056d0,0x055b2,0x049b0,0x0a577,0x0a4b0,0x0aa50,0x1b255,0x06d20,0x0ada0,
+    0x14b63
+]
+
+_TIANGAN = ['甲','乙','丙','丁','戊','己','庚','辛','壬','癸']
+_DIZHI = ['子','丑','寅','卯','辰','巳','午','未','申','酉','戌','亥']
+_SHENGXIAO = ['鼠','牛','虎','兔','龙','蛇','马','羊','猴','鸡','狗','猪']
+_LUNAR_MONTHS = ['正','二','三','四','五','六','七','八','九','十','冬','腊']
+_LUNAR_DAYS = [
+    '初一','初二','初三','初四','初五','初六','初七','初八','初九','初十',
+    '十一','十二','十三','十四','十五','十六','十七','十八','十九','二十',
+    '廿一','廿二','廿三','廿四','廿五','廿六','廿七','廿八','廿九','三十'
+]
+
+def get_lunar_date_str(d=None):
+    if d is None:
+        d = datetime.date.today()
+    elif hasattr(d, "date"):
+        d = d.date()
+    base_date = datetime.date(1900, 1, 31)
+    offset = (d - base_date).days
+    l_year = 1900
+    for i in range(1900, 2050):
+        code = _LUNAR_TABLE[i - 1900]
+        days_in_year = 0
+        for m in range(12):
+            days_in_year += 30 if (code & (0x10000 >> (m + 1))) else 29
+        leap_month = code & 0xf
+        if leap_month > 0:
+            days_in_year += 30 if (code & 0x10000) else 29
+        if offset < days_in_year:
+            l_year = i
+            break
+        offset -= days_in_year
+
+    code = _LUNAR_TABLE[l_year - 1900]
+    leap_month = code & 0xf
+    is_leap = False
+    l_month = 1
+    for m in range(1, 13):
+        days_in_month = 30 if (code & (0x10000 >> m)) else 29
+        if offset < days_in_month:
+            l_month = m
+            break
+        offset -= days_in_month
+        if leap_month == m:
+            leap_days = 30 if (code & 0x10000) else 29
+            if offset < leap_days:
+                is_leap = True
+                l_month = m
+                break
+            offset -= leap_days
+    l_day = offset + 1
+    tg = _TIANGAN[(l_year - 4) % 10]
+    dz = _DIZHI[(l_year - 4) % 12]
+    sx = _SHENGXIAO[(l_year - 4) % 12]
+    m_str = ('闰' if is_leap else '') + _LUNAR_MONTHS[l_month - 1] + '月'
+    d_str = _LUNAR_DAYS[l_day - 1]
+    return f"{tg}{dz}{sx}年 {m_str}{d_str}"
+
+_FALLBACK_QUOTES = [
+    {"quote": "世间好物不坚牢，彩云易散琉璃脆。", "author": "杨绛"},
+    {"quote": "如果方向一致，两个命中注定要结伴同行的过客是不会擦肩而过的。", "author": "《他们最幸福》"},
+    {"quote": "每一天和每个微不足道的成绩都是一种礼物。", "author": "卡夫卡"},
+    {"quote": "表面看似幸福的生命可能是空虚的，而一个表面看似艰难的生活可能致力于一项伟大的事业。", "author": "阿图·葛文德"},
+    {"quote": "人活着，像航海。你的恨，你的风暴；你的爱，你的云彩。", "author": "绿原"},
+    {"quote": "给岁月以文明，而不是给文明以岁月。", "author": "《三体》"},
+    {"quote": "纵有千古，横有八荒；前途似海，来日方长。", "author": "梁启超"},
+    {"quote": "怕什么真理无穷，进一寸有进一寸的欢喜。", "author": "胡适"},
+    {"quote": "追风赶月莫停留，平芜尽处是春山。", "author": "《华夏说》"},
+    {"quote": "不乱于心，不困于情。不畏将来，不念过往。如此，安好。", "author": "丰子恺"},
+    {"quote": "人生天地间，忽如远行客。", "author": "《古诗十九首》"},
+    {"quote": "行是知之始，知是行之成。", "author": "陶行知"},
+    {"quote": "岁月不饶人，我亦未曾饶过岁月。", "author": "木心"},
+    {"quote": "心之所向，素履以往；生如逆旅，一苇以航。", "author": "七堇年"}
+]
+
+def load_cwu_quotes():
+    """加载春戊名言库（优先读取同目录 cwu_quotes.json，缺失时使用精选内置库）"""
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cwu_quotes.json"),
+        os.path.join(os.getcwd(), "cwu_quotes.json")
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list) and len(data) > 0:
+                        return data
+            except Exception:
+                pass
+    return _FALLBACK_QUOTES
+
+def fetch_daily_sentence():
+    """获取今日名言（春戊服务端接口优先，校外或离线时采用按日轮播算法）"""
+    url = "http://10.181.201.165:1908/api/pdb/sentence/today"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "chunhui-cli/1.0"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                chs = data.get("chs", "").strip()
+                eng = data.get("eng", "").strip()
+                prior = data.get("prior_lang", "chs")
+                if prior != "chs" and eng:
+                    chs, eng = eng, chs
+                if chs:
+                    return {
+                        "source": "server",
+                        "chs": chs,
+                        "eng": eng,
+                        "author": "春戊服务端每日推送"
+                    }
+    except Exception:
+        pass
+
+    # 离线轮播算法（与原版春戊客户端完全对齐）
+    quotes = load_cwu_quotes()
+    today = datetime.date.today()
+    base_date = datetime.date(2021, 1, 1)
+    days = (today - base_date).days
+    offset = (7 * (days - 1)) % len(quotes)
+    offset = (offset + len(quotes)) % len(quotes)
+    cur = quotes[offset]
+    return {
+        "source": "local_rotation",
+        "chs": cur.get("quote", ""),
+        "eng": "",
+        "author": cur.get("author", "精选名言")
+    }
+
+def fetch_daily_weather():
+    """获取白马湖实时天气（内网时调取 /api/weather）"""
+    url = "http://10.181.201.165:1908/api/weather"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "chunhui-cli/1.0"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                if data.get("status") == "ok" and "result" in data:
+                    res = data["result"]
+                    rt = res.get("realtime", {})
+                    temp = round(float(rt.get("temperature", 0)))
+                    app_temp = round(float(rt.get("apparent_temperature", 0)))
+                    desc = res.get("forecast_keypoint", "")
+                    aqi = rt.get("air_quality", {}).get("description", {}).get("chn", "良好")
+                    d0 = res.get("daily", {})
+                    d_max = round(float(d0.get("temperature", [{}])[0].get("max", temp)))
+                    d_min = round(float(d0.get("temperature", [{}])[0].get("min", temp)))
+                    return {
+                        "online": True,
+                        "temp": temp,
+                        "app_temp": app_temp,
+                        "desc": desc,
+                        "aqi": aqi,
+                        "range": f"{d_min}°C ~ {d_max}°C"
+                    }
+    except Exception:
+        pass
+    return {"online": False}
+
+def get_daily_recommendations(count=3, offset=None):
+    """获取原版名言推荐"""
+    quotes = load_cwu_quotes()
+    if not quotes:
+        return []
+    if offset is None:
+        today = datetime.date.today()
+        base_date = datetime.date(2021, 1, 1)
+        days = (today - base_date).days
+        offset = (7 * (days - 1)) % len(quotes)
+        offset = (offset + len(quotes)) % len(quotes)
+    res = []
+    for i in range(count):
+        idx = (offset + i) % len(quotes)
+        res.append(quotes[idx])
+    return res
+
+get_cwu_quotes = get_daily_recommendations
+
+CAMPUS_PORTAL_SERVICES = [
+    {
+        "id": 1,
+        "name": "校园网综合门户",
+        "desc": "校园办公、课表、考评、收件箱与基础数据门户",
+        "url": "http://10.181.200.3/home/home4pc/",
+        "icon": "🏫"
+    },
+    {
+        "id": 2,
+        "name": "云上春晖 NAS",
+        "desc": "群晖文件中心，班级资料与大容量教学网盘",
+        "url": "http://10.181.201.188:5000/",
+        "icon": "☁️"
+    },
+    {
+        "id": 3,
+        "name": "春晖图库相册",
+        "desc": "百年名校历史图库、活动掠影与校园活动素材精选",
+        "url": "http://10.181.201.188/photo/",
+        "icon": "🖼️"
+    },
+    {
+        "id": 4,
+        "name": "春晖视频中心",
+        "desc": "校园精品公开课、电视台专题回放与视频资源库",
+        "url": "http://10.181.201.185:82/",
+        "icon": "🎬"
+    },
+    {
+        "id": 5,
+        "name": "云上春晖 AI",
+        "desc": "校内私有化部署的大语言模型与智能辅导助手",
+        "url": "http://10.181.201.181/chat/",
+        "icon": "🤖"
+    },
+    {
+        "id": 6,
+        "name": "春晖电视台直播流",
+        "desc": "校园大型集会、晨会与活动 RTMP 高清实时直播",
+        "url": "rtmp://10.181.201.185/live/livestream",
+        "icon": "📺"
+    }
+]
+
+def cmd_briefing(args=None):
+    """白马湖每日简报"""
+    today = datetime.date.today()
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    weekday_str = weekdays[today.weekday()]
+    date_str = today.strftime("%Y年%m月%d日")
+    lunar_str = get_lunar_date_str(today)
+    
+    print(f"\n{C_BLUE}╔════════════════════════════════════════════════════════════════════════════════╗{C_RESET}")
+    print(f"{C_BLUE}║{C_RESET} {C_BOLD}{C_YELLOW}🌅 白马湖每日晨报 · CHUNHUI DAILY BRIEFING{C_RESET}")
+    print(f"{C_BLUE}╠════════════════════════════════════════════════════════════════════════════════╣{C_RESET}")
+    print(f"{C_BLUE}║{C_RESET} 📅 {C_BOLD}公历日期：{C_RESET}{date_str} {weekday_str}    |   🏮 {C_BOLD}农历岁次：{C_RESET}{lunar_str}")
+    
+    weather = fetch_daily_weather()
+    if weather.get("online"):
+        wt_str = f"🌡️ {weather['temp']}°C (体感 {weather['app_temp']}°C, 范围 {weather['range']}) | 空气质量: {weather['aqi']}"
+        desc_str = weather.get('desc') or '天气平稳'
+        print(f"{C_BLUE}║{C_RESET} ⛅ {C_BOLD}白马湖天气：{C_RESET}{wt_str}")
+        print(f"{C_BLUE}║{C_RESET}    {C_CYAN}气象简评：{desc_str}{C_RESET}")
+    else:
+        print(f"{C_BLUE}║{C_RESET} ⛅ {C_BOLD}白马湖天气：{C_RESET}{C_GREY}离校模式 (校园内网气象站未连接){C_RESET}")
+        
+    print(f"{C_BLUE}╠════════════════════════════════════════════════════════════════════════════════╣{C_RESET}")
+    
+    sentence = fetch_daily_sentence()
+    chs = sentence.get("chs", "")
+    eng = sentence.get("eng", "")
+    author = sentence.get("author", "")
+    src_tag = "[服务端推送]" if sentence.get("source") == "server" else "[日历轮播]"
+    
+    print(f"{C_BLUE}║{C_RESET} {C_BOLD}{C_GREEN}💡 今日一言 {C_GREY}{src_tag}{C_RESET}")
+    print(f"{C_BLUE}║{C_RESET}   {C_BOLD}“{chs}”{C_RESET}")
+    if eng:
+        print(f"{C_BLUE}║{C_RESET}   {C_GREY}{eng}{C_RESET}")
+    if author:
+        print(f"{C_BLUE}║{C_RESET}   {C_YELLOW}—— {author}{C_RESET}")
+        
+    print(f"{C_BLUE}╠════════════════════════════════════════════════════════════════════════════════╣{C_RESET}")
+    print(f"{C_BLUE}║{C_RESET} {C_BOLD}{C_CYAN}📖 今日精选哲思推荐 (离线题库轮播){C_RESET}")
+    recs = get_daily_recommendations(3)
+    for i, r in enumerate(recs, 1):
+        q = r.get("quote", "").strip()
+        a = r.get("author", "").strip()
+        a_str = f" —— {a}" if a else ""
+        print(f"{C_BLUE}║{C_RESET}   {i}. {q}{C_GREY}{a_str}{C_RESET}")
+        
+    print(f"{C_BLUE}╚════════════════════════════════════════════════════════════════════════════════╝{C_RESET}\n")
+
+def cmd_lottery(args=None):
+    """课堂抽签点名器"""
+    min_num = getattr(args, "min", 1) if args else 1
+    max_num = getattr(args, "max", 50) if args else 50
+    repeat = getattr(args, "repeat", False) if args else False
+    
+    if min_num >= max_num:
+        log_error("学号区间无效：最小值必须小于最大值。")
+        return
+
+    pool = list(range(min_num, max_num + 1))
+    drawn_history = []
+    
+    print(f"\n{C_BOLD}{C_CYAN}🎯 浙江省春晖中学 · 课堂抽签点名器 (Class Lottery){C_RESET}")
+    print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
+    print(f"学号范围：{C_YELLOW}{min_num} ~ {max_num}{C_RESET} 号  |  总人数：{C_GREEN}{len(pool)}{C_RESET} 人  |  抽取模式：{C_BOLD}{'允许重复' if repeat else '防重复'}{C_RESET}")
+    print(f"{C_BLUE}──────────────────────────────────────────────────{C_RESET}")
+    print(f"{C_GREY}操作提示：[回车/空格] 开始抽签  [r] 重置名单  [q] 退出程序{C_RESET}\n")
+    
+    while True:
+        if not pool and not repeat:
+            print(f"\n{C_YELLOW}⚠️ 本轮候选池所有学号（共 {len(drawn_history)} 人）已全部抽选完毕！{C_RESET}")
+            print(f"按 [r] 重置候选名单重新开始，或按 [q] 退出...")
+            k = getkey()
+            if k == 'r':
+                pool = list(range(min_num, max_num + 1))
+                drawn_history.clear()
+                print(f"{C_GREEN}已重置候选池，恢复为 {len(pool)} 人。{C_RESET}\n")
+                continue
+            elif k in ('q', 'esc'):
+                break
+            else:
+                continue
+
+        prompt_str = f"剩余候选: {len(pool)}人 | [回车] 抽选下一个 > " if not repeat else "模式: 允许重复 | [回车] 抽选下一个 > "
+        sys.stdout.write(prompt_str)
+        sys.stdout.flush()
+        k = getkey()
+        
+        if k in ('q', 'esc'):
+            print(f"\n{C_GREY}已退出课堂抽签。{C_RESET}\n")
+            break
+        elif k == 'r':
+            pool = list(range(min_num, max_num + 1))
+            drawn_history.clear()
+            print(f"\n{C_GREEN}已手动重置候选名单 (总计 {len(pool)} 人)。{C_RESET}\n")
+            continue
+        elif k in ('enter', 'space', '\r', '\n'):
+            all_nums = list(range(min_num, max_num + 1))
+            roll_count = random.randint(18, 24)
+            for step in range(roll_count):
+                temp_val = random.choice(all_nums)
+                delay = 0.02 + (step / roll_count) * 0.08
+                sys.stdout.write(f"\r  🎲 正在摇号: {C_BOLD}{C_YELLOW}[ {temp_val:02d} 号 ]{C_RESET} ...  ")
+                sys.stdout.flush()
+                time.sleep(delay)
+                
+            if repeat:
+                chosen = random.choice(all_nums)
+            else:
+                chosen = random.choice(pool)
+                pool.remove(chosen)
+            drawn_history.append(chosen)
+            
+            sys.stdout.write(f"\r{' ' * 45}\r")
+            print(f"{C_GREEN}╔══════════════════════════════╗{C_RESET}")
+            print(f"{C_GREEN}║{C_RESET}       🎯 中选中奖学号        {C_GREEN}║{C_RESET}")
+            print(f"{C_GREEN}║{C_RESET}                              {C_GREEN}║{C_RESET}")
+            print(f"{C_GREEN}║{C_RESET}          {C_BOLD}{C_YELLOW}【 {chosen:02d} 号 】{C_RESET}         {C_GREEN}║{C_RESET}")
+            print(f"{C_GREEN}║{C_RESET}                              {C_GREEN}║{C_RESET}")
+            if not repeat:
+                print(f"{C_GREEN}║{C_RESET}  已抽取: {len(drawn_history):02d} 人 | 剩余: {len(pool):02d} 人   {C_GREEN}║{C_RESET}")
+            else:
+                print(f"{C_GREEN}║{C_RESET}  累计抽取次数: {len(drawn_history):02d} 次          {C_GREEN}║{C_RESET}")
+            print(f"{C_GREEN}╚══════════════════════════════╝{C_RESET}\n")
+
+def cmd_anydoor(args=None):
+    """校园内网任意门服务聚合导航"""
+    import webbrowser
+    
+    print(f"\n{C_BOLD}{C_CYAN}🚪 春戊校园任意门 · 校园网核心基础设施直达导航{C_RESET}")
+    print(f"{C_BLUE}────────────────────────────────────────────────────────────────────────────{C_RESET}")
+    print(f"{C_BOLD}{'序号':<6} {'服务名称':<18} {'节点地址 / 协议':<36} {'说明'}{C_RESET}")
+    print(f"{C_BLUE}────────────────────────────────────────────────────────────────────────────{C_RESET}")
+    for item in CAMPUS_PORTAL_SERVICES:
+        num_tag = f"[{item['id']}]"
+        print(f"{C_GREEN}{num_tag:<6}{C_RESET} {C_BOLD}{item['icon']} {item['name']:<14}{C_RESET} {C_CYAN}{item['url']:<36}{C_RESET} {C_GREY}{item['desc']}{C_RESET}")
+    print(f"{C_BLUE}────────────────────────────────────────────────────────────────────────────{C_RESET}")
+    print(f"{C_GREY}输入对应序号 [1-6] 直接在系统默认浏览器中打开，按 [q/Enter] 返回。{C_RESET}\n")
+    
+    while True:
+        try:
+            choice = input(f"{C_YELLOW}请选择要访问的服务 [1-6, q退出]: {C_RESET}").strip().lower()
+            if not choice or choice == 'q':
+                break
+            if choice.isdigit() and 1 <= int(choice) <= len(CAMPUS_PORTAL_SERVICES):
+                target = CAMPUS_PORTAL_SERVICES[int(choice) - 1]
+                log_info(f"正在打开浏览器访问: {target['name']} ({target['url']})...")
+                webbrowser.open(target['url'])
+                break
+            else:
+                log_warn("输入无效，请输入 1 到 6 之间的数字。")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            break
 
 def get_captcha():
     """
@@ -3729,27 +4128,51 @@ def tui_status_card():
     print(f"\n{C_CYAN}按任意键返回主菜单...{C_RESET}")
     getkey()
 
+def tui_briefing():
+    os.system('cls' if os.name == 'nt' else 'clear')
+    cmd_briefing()
+    print(f"{C_CYAN}按任意键返回主菜单...{C_RESET}")
+    getkey()
+
+def tui_lottery():
+    os.system('cls' if os.name == 'nt' else 'clear')
+    cmd_lottery()
+    print(f"{C_CYAN}按任意键返回主菜单...{C_RESET}")
+    getkey()
+
+def tui_anydoor():
+    os.system('cls' if os.name == 'nt' else 'clear')
+    cmd_anydoor()
+    print(f"{C_CYAN}按任意键返回主菜单...{C_RESET}")
+    getkey()
+
 def handle_tui_action(choice):
     try:
         if choice == 0:
-            tui_login_menu()
+            tui_briefing()
         elif choice == 1:
-            tui_status_card()
+            tui_lottery()
         elif choice == 2:
-            tui_schedule_interactive()
+            tui_anydoor()
         elif choice == 3:
-            tui_messages_paginated()
+            tui_login_menu()
         elif choice == 4:
-            tui_hygiene_paginated()
+            tui_status_card()
         elif choice == 5:
-            tui_duty_interactive()
+            tui_schedule_interactive()
         elif choice == 6:
-            tui_news_interactive()
+            tui_messages_paginated()
         elif choice == 7:
-            tui_bedroom_interactive()
+            tui_hygiene_paginated()
         elif choice == 8:
-            tui_lostfound_paginated()
+            tui_duty_interactive()
         elif choice == 9:
+            tui_news_interactive()
+        elif choice == 10:
+            tui_bedroom_interactive()
+        elif choice == 11:
+            tui_lostfound_paginated()
+        elif choice == 12:
             tui_file_interactive()
     except KeyboardInterrupt:
         pass
@@ -3773,6 +4196,9 @@ def run_tui():
         cmd_prefix = main_file
 
     options = [
+        ("白马湖每日晨报 (Daily Briefing)", f"{cmd_prefix} briefing", "今日名言、农历岁次、白马湖气象速报与哲思推荐"),
+        ("课堂抽签点名器 (Class Lottery)", f"{cmd_prefix} lottery", "课堂随机抽选学号、平滑数字滚动动画、支持防重复与重置"),
+        ("校园内网任意门 (AnyDoor Portal)", f"{cmd_prefix} anydoor", "一键直达校园网门户、云上春晖 NAS、图库、视频与 AI 助手"),
         ("登录系统 (Import Cookie)", f"{cmd_prefix} login", "导入浏览器获取的会话 Cookie，完成身份认证与凭据存储"),
         ("查询登录状态 (Check Status)", f"{cmd_prefix} status", "检测当前会话有效性，查看在线状态与用户基础信息"),
         ("班级课表查询 (Class Schedule)", f"{cmd_prefix} schedule", "查询高一至高三年级各班级完整课程表与任课教师团队"),
@@ -3817,6 +4243,7 @@ def run_tui():
             print(render_row(f"{C_YELLOW}{C_BOLD}浙江省春晖中学校园网控制台 · CHUNHUI HIGH SCHOOL{C_RESET}", "center"))
             print(render_box_line("├", "─", "┤"))
             print(render_row(f"{C_BOLD}[系统节点]{C_RESET} 10.181.200.3    {C_BOLD}[会话状态]{C_RESET} {session_status}"))
+            print(render_row(f"{C_BOLD}[今日岁次]{C_RESET} {get_lunar_date_str()}"))
             print(render_box_line("├", "─", "┤"))
 
             for idx, (title, cmd, _) in enumerate(options):
@@ -3964,7 +4391,17 @@ def main():
     parser_lf.add_argument("--download", "-d", action="store_true", help="是否下载该失物招领关联的图片或多媒体附件")
     parser_lf.add_argument("--out", type=str, default=".", help="指定文件的下载保存目录")
 
+    # briefing command
+    subparsers.add_parser("briefing", aliases=["morning", "daily"], help="白马湖每日晨报 (今日名言、农历天气与哲思推荐)")
 
+    # lottery command
+    parser_lottery = subparsers.add_parser("lottery", aliases=["roll"], help="课堂抽签点名器 (随机抽选学号、平滑数字滚动动画)")
+    parser_lottery.add_argument("--min", type=int, default=1, help="学号最小值 (默认: 1)")
+    parser_lottery.add_argument("--max", type=int, default=50, help="学号最大值 (默认: 50)")
+    parser_lottery.add_argument("--repeat", action="store_true", help="允许重复抽取同一学号 (默认防重复)")
+
+    # anydoor / portal command
+    subparsers.add_parser("anydoor", aliases=["portal"], help="校园内网任意门服务聚合导航 (一键直达校园基础设施)")
 
     args = parser.parse_args()
 
@@ -3975,8 +4412,13 @@ def main():
         parser_file.print_help()
         sys.exit(0)
 
-
-    if args.command == "login":
+    if args.command in ("briefing", "morning", "daily"):
+        cmd_briefing(args)
+    elif args.command in ("lottery", "roll"):
+        cmd_lottery(args)
+    elif args.command in ("anydoor", "portal"):
+        cmd_anydoor(args)
+    elif args.command == "login":
         cmd_login(args)
     elif args.command == "logout":
         cmd_logout(args)
@@ -3998,7 +4440,6 @@ def main():
         cmd_bedroom(args)
     elif args.command == "lostfound" or args.command == "lf":
         cmd_lostfound(args)
-
     else:
         parser.print_help()
 

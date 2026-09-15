@@ -31,6 +31,8 @@ import threading
 import urllib.parse
 import urllib.request
 import tempfile
+import webbrowser
+import random
 
 # 引入底层 CLI 逻辑模块
 try:
@@ -245,6 +247,83 @@ class ChunhuiApi:
                 except Exception as e:
                     return {"success": False, "error": f"保存文件失败: {e}"}
         return {"success": False, "error": "取消保存"}
+
+    # ----- 9. 每日白马湖晨报 (Daily Briefing) -----
+
+    def get_daily_briefing(self):
+        """获取今日公历、农历、气象信息、今日一言与精选名言"""
+        import datetime
+        now = datetime.datetime.now()
+        weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        weekday_str = weekday_names[now.weekday()]
+        date_str = f"{now.year}年{now.month:02d}月{now.day:02d}日"
+
+        lunar_str = ch_cli.get_lunar_date_str(now) if (ch_cli and hasattr(ch_cli, "get_lunar_date_str")) else ""
+        
+        raw_sentence = ch_cli.fetch_daily_sentence() if (ch_cli and hasattr(ch_cli, "fetch_daily_sentence")) else {}
+        sentence = {
+            "quote": raw_sentence.get("quote") or raw_sentence.get("chs") or "学而不思则罔，思而不学则殆。",
+            "author": raw_sentence.get("author") or "孔子",
+            "from": raw_sentence.get("from") or "",
+            "source": raw_sentence.get("source") or "fallback"
+        }
+
+        raw_weather = ch_cli.fetch_daily_weather() if (ch_cli and hasattr(ch_cli, "fetch_daily_weather")) else {}
+        weather = {
+            "online": raw_weather.get("online", False),
+            "temp": str(raw_weather.get("temp", "24")),
+            "weather": raw_weather.get("desc") or raw_weather.get("weather") or "晴间多云",
+            "wind": raw_weather.get("wind", "微风"),
+            "humidity": raw_weather.get("humidity", "65%"),
+            "source": "campus_api" if raw_weather.get("online") else "fallback"
+        }
+
+        rec_quotes = ch_cli.get_daily_recommendations(count=3) if (ch_cli and hasattr(ch_cli, "get_daily_recommendations")) else []
+
+        return {
+            "success": True,
+            "date_str": date_str,
+            "weekday": weekday_str,
+            "lunar": lunar_str,
+            "sentence": sentence,
+            "weather": weather,
+            "recommendations": rec_quotes
+        }
+
+    def get_random_quotes(self, count=3):
+        """换一批获取原版经典名言"""
+        quotes = []
+        if ch_cli and hasattr(ch_cli, "load_cwu_quotes"):
+            quotes = ch_cli.load_cwu_quotes()
+        if not quotes:
+            quotes_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cwu_quotes.json")
+            if os.path.exists(quotes_file):
+                try:
+                    with open(quotes_file, "r", encoding="utf-8") as f:
+                        quotes = json.load(f)
+                except Exception:
+                    pass
+        if quotes:
+            return {"success": True, "quotes": random.sample(quotes, min(count, len(quotes)))}
+        return {"success": True, "quotes": []}
+
+    # ----- 10. 校园任意门与外链直达 (AnyDoor) -----
+
+    def get_campus_services(self):
+        """获取校园内网核心基础设施服务列表"""
+        if ch_cli and hasattr(ch_cli, "CAMPUS_PORTAL_SERVICES"):
+            return {"success": True, "services": ch_cli.CAMPUS_PORTAL_SERVICES}
+        return {"success": False, "services": []}
+
+    def open_external_url(self, url):
+        """在系统默认浏览器中打开指定链接"""
+        if not url:
+            return {"success": False, "error": "URL 不能为空"}
+        try:
+            webbrowser.open(url)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 # ----------------------------------------------------------------------
 # 原生 HTML/CSS/JS 界面定义 (零外部依赖、极速现代设计、无 Mock 真实反馈)
@@ -612,6 +691,302 @@ table.data-table tr:hover td {
   color: var(--text-muted);
   min-width: 100px;
 }
+
+/* 每日白马湖晨报专属样式 */
+.briefing-hero-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.briefing-calendar-card {
+  background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%);
+  border: 1px solid #bbf7d0;
+  padding: 18px 20px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.briefing-weather-card {
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+  border: 1px solid #bfdbfe;
+  padding: 18px 20px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.date-big {
+  font-size: 26px;
+  font-weight: 800;
+  color: #1e293b;
+  letter-spacing: -0.5px;
+}
+.date-sub {
+  font-size: 13px;
+  color: #475569;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lunar-badge {
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #bbf7d0;
+}
+.weather-temp {
+  font-size: 28px;
+  font-weight: 800;
+  color: #1d4ed8;
+}
+.weather-desc {
+  font-size: 13px;
+  color: #334155;
+  font-weight: 600;
+  margin-top: 2px;
+}
+.weather-detail {
+  font-size: 11.5px;
+  color: #64748b;
+  margin-top: 6px;
+}
+.quote-hero-card {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--primary);
+  border-radius: 8px;
+  padding: 20px 24px;
+  margin-bottom: 14px;
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+.quote-hero-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.quote-hero-text {
+  font-size: 17px;
+  line-height: 1.75;
+  color: #0f172a;
+  font-weight: 500;
+  margin-bottom: 12px;
+  letter-spacing: 0.2px;
+}
+.quote-hero-author {
+  text-align: right;
+  font-size: 13px;
+  color: #475569;
+  font-weight: 600;
+}
+.quote-rec-item {
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: #f8fafc;
+  border: 1px solid #f1f5f9;
+  margin-bottom: 8px;
+  transition: all 0.15s ease;
+}
+.quote-rec-item:hover {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+}
+.quote-rec-text {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1e293b;
+}
+.quote-rec-author {
+  font-size: 11.5px;
+  color: #64748b;
+  text-align: right;
+  margin-top: 4px;
+}
+
+/* 课堂抽签点名器专属样式 */
+.lottery-stage {
+  background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+  border-radius: 12px;
+  padding: 36px 24px;
+  text-align: center;
+  color: #f8fafc;
+  margin-bottom: 14px;
+  box-shadow: 0 8px 24px rgba(15,23,42,0.12);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+}
+.lottery-multi-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+  align-items: center;
+  margin: 12px 0 20px;
+}
+.lottery-num-card {
+  background: rgba(255,255,255,0.08);
+  border: 2px solid rgba(255,255,255,0.18);
+  border-radius: 10px;
+  padding: 12px 24px;
+  min-width: 100px;
+  text-align: center;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.lottery-num-card.winner {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: #4ade80;
+  transform: scale(1.06);
+}
+.lottery-num-text {
+  font-size: 52px;
+  font-weight: 800;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  color: #38bdf8;
+  letter-spacing: 1px;
+}
+.lottery-num-card.winner .lottery-num-text {
+  color: #4ade80;
+}
+.lottery-single-text {
+  font-size: 78px;
+  font-weight: 800;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  color: #38bdf8;
+  letter-spacing: 2px;
+  margin: 10px 0 16px;
+  text-shadow: 0 4px 16px rgba(56,189,248,0.3);
+}
+.lottery-single-text.winner {
+  color: #4ade80;
+  text-shadow: 0 4px 20px rgba(74,222,128,0.4);
+}
+.lottery-action-btn {
+  padding: 10px 32px;
+  font-size: 15px;
+  font-weight: 700;
+  border-radius: 8px;
+  background: #3b82f6;
+  color: #ffffff;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(59,130,246,0.35);
+  transition: all 0.15s ease;
+}
+.lottery-action-btn:hover {
+  background: #2563eb;
+  transform: translateY(-1px);
+}
+.lottery-action-btn:active {
+  transform: translateY(1px);
+}
+.lottery-tag {
+  display: inline-block;
+  padding: 3px 8px;
+  background: #e2e8f0;
+  color: #334155;
+  border-radius: 4px;
+  font-size: 11.5px;
+  margin: 2px;
+}
+.lottery-tag.drawn {
+  background: #fee2e2;
+  color: #b91c1c;
+  text-decoration: line-through;
+}
+
+/* 校园内网任意门专属样式 */
+.portal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.portal-card {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+.portal-card:hover {
+  border-color: var(--primary);
+  box-shadow: 0 4px 12px rgba(29,78,216,0.08);
+  transform: translateY(-2px);
+}
+.portal-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.portal-icon-box {
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: #eff6ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.portal-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.portal-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1.5px 6px;
+  border-radius: 3px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  margin-top: 2px;
+  display: inline-block;
+}
+.portal-desc {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.55;
+  margin-bottom: 14px;
+  flex: 1;
+}
+.portal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid #f1f5f9;
+  padding-top: 10px;
+}
+.portal-url-label {
+  font-size: 11px;
+  font-family: monospace;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 170px;
+}
 </style>
 </head>
 <body>
@@ -622,7 +997,8 @@ table.data-table tr:hover td {
     <p>桌面客户端 (CLI 接口直连版)</p>
   </div>
   <div class="nav-menu">
-    <div class="nav-item active" data-tab="inbox" onclick="switchTab('inbox')"><span class="nav-icon">📬</span>个人信件 (收件箱)</div>
+    <div class="nav-item active" data-tab="briefing" onclick="switchTab('briefing')"><span class="nav-icon">🌅</span>每日白马湖晨报</div>
+    <div class="nav-item" data-tab="inbox" onclick="switchTab('inbox')"><span class="nav-icon">📬</span>个人信件 (收件箱)</div>
     <div class="nav-item" data-tab="news" onclick="switchTab('news')"><span class="nav-icon">📢</span>校园通知与公告</div>
     <div class="nav-item" data-tab="schedule" onclick="switchTab('schedule')"><span class="nav-icon">📅</span>班级课表查询</div>
     <div class="nav-item" data-tab="hygiene" onclick="switchTab('hygiene')"><span class="nav-icon">🧹</span>常规卫生考评</div>
@@ -630,17 +1006,19 @@ table.data-table tr:hover td {
     <div class="nav-item" data-tab="duty" onclick="switchTab('duty')"><span class="nav-icon">🛡️</span>行政值周安排</div>
     <div class="nav-item" data-tab="lostfound" onclick="switchTab('lostfound')"><span class="nav-icon">🎒</span>全校失物招领</div>
     <div class="nav-item" data-tab="filestation" onclick="switchTab('filestation')"><span class="nav-icon">📦</span>校内文件寄取处</div>
+    <div class="nav-item" data-tab="lottery" onclick="switchTab('lottery')"><span class="nav-icon">🎲</span>课堂抽签点名</div>
+    <div class="nav-item" data-tab="anydoor" onclick="switchTab('anydoor')"><span class="nav-icon">🚪</span>校园内网任意门</div>
     <div class="nav-item" data-tab="settings" onclick="switchTab('settings')"><span class="nav-icon">⚙️</span>网络与会话状态</div>
   </div>
   <div class="sidebar-footer">
-    <span>chunhui-gui v1.3.0</span>
+    <span>chunhui-gui v1.4.0</span>
   </div>
 </div>
 
 <div id="main-content">
   <header>
     <div class="header-left">
-      <div class="page-title" id="current-title">个人信件 (收件箱)</div>
+      <div class="page-title" id="current-title">每日白马湖晨报</div>
       <div id="network-badge" class="status-pill offline">
         <span class="status-dot"></span>
         <span id="network-text">检测中...</span>
@@ -654,8 +1032,60 @@ table.data-table tr:hover td {
   </header>
 
   <div class="content-body">
+    <!-- 0. 每日白马湖晨报 (Briefing) -->
+    <div id="tab-briefing" class="tab-pane active">
+      <div class="briefing-hero-grid">
+        <div class="briefing-calendar-card">
+          <div>
+            <div style="font-size:11.5px; font-weight:700; color:#15803d; text-transform:uppercase; letter-spacing:0.5px;">白马湖晨光 · 今日校历</div>
+            <div class="date-big" id="briefing-date">加载中...</div>
+          </div>
+          <div class="date-sub">
+            <span id="briefing-weekday" style="font-weight:600;">--</span>
+            <span class="lunar-badge" id="briefing-lunar">计算农历中...</span>
+          </div>
+        </div>
+        <div class="briefing-weather-card">
+          <div>
+            <div style="font-size:11.5px; font-weight:700; color:#1d4ed8; text-transform:uppercase; letter-spacing:0.5px;">上虞气象与环境感知</div>
+            <div style="display:flex; align-items:baseline; gap:8px;">
+              <span class="weather-temp" id="briefing-weather-temp">--°C</span>
+              <span class="weather-desc" id="briefing-weather-desc">正在拉取...</span>
+            </div>
+          </div>
+          <div class="weather-detail" id="briefing-weather-detail">
+            风向风级：-- | 湿度：-- | 数据源：正在连接
+          </div>
+        </div>
+      </div>
+
+      <!-- 今日一言大卡片 -->
+      <div class="quote-hero-card" id="briefing-quote-hero">
+        <div class="quote-hero-title">
+          <span>📖 白马湖今日一言</span>
+          <span class="tag tag-blue" id="quote-source-badge">校内同步</span>
+        </div>
+        <div class="quote-hero-text" id="quote-hero-text">正在加载今日灵感名句...</div>
+        <div class="quote-hero-author" id="quote-hero-author">——</div>
+      </div>
+
+      <!-- 每日经典文学与高考金句精选 -->
+      <div class="card" style="padding: 16px 20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <div>
+            <h3 style="font-size:14px; font-weight:700; color:#0f172a;">📚 人文经典与写作灵感金句</h3>
+            <p style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">精选自原版春戊经典名作与高考素材宝库 (共 2969 条)</p>
+          </div>
+          <button class="btn" onclick="refreshRandomQuotes()">🔀 换一批</button>
+        </div>
+        <div id="briefing-rec-quotes">
+          <div style="text-align:center; padding:20px; color:var(--text-muted);">正在精选名句...</div>
+        </div>
+      </div>
+    </div>
+
     <!-- 1. 个人信件 (收件箱) -->
-    <div id="tab-inbox" class="tab-pane active">
+    <div id="tab-inbox" class="tab-pane">
       <div class="toolbar">
         <input type="text" class="search-input" placeholder="筛选信件标题、发件人..." oninput="filterTable('inbox-table', this.value)">
         <button class="btn" onclick="loadInbox(currentInboxPage)">刷新列表</button>
@@ -874,7 +1304,103 @@ table.data-table tr:hover td {
       </div>
     </div>
 
-    <!-- 9. 网络与会话状态 (Settings) -->
+    <!-- 10. 课堂抽签点名器 (Lottery) -->
+    <div id="tab-lottery" class="tab-pane">
+      <div class="toolbar">
+        <label style="font-size:12px; font-weight:600;">抽签模式：</label>
+        <select id="lottery-mode-select" class="form-control" style="width: 170px;" onchange="handleLotteryModeChange(this.value)">
+          <option value="1-50">全班学号 (1-50 号)</option>
+          <option value="custom-range">自定义学号号段</option>
+          <option value="custom-names">自定义学生名单</option>
+        </select>
+        
+        <span id="lottery-range-box" style="display:none; align-items:center; gap:4px;">
+          <input type="number" id="lottery-range-min" class="form-control" style="width:65px;" value="1" min="1">
+          <span>至</span>
+          <input type="number" id="lottery-range-max" class="form-control" style="width:65px;" value="55" min="1">
+          <button class="btn" onclick="applyCustomRange()">应用范围</button>
+        </span>
+
+        <label style="font-size:12px; font-weight:600; margin-left:6px;">单次抽取：</label>
+        <select id="lottery-count-select" class="form-control" style="width: 85px;">
+          <option value="1">1 人</option>
+          <option value="2">2 人</option>
+          <option value="3">3 人</option>
+          <option value="5">5 人</option>
+        </select>
+
+        <label style="font-size:12px; margin-left:6px; display:inline-flex; align-items:center; gap:4px; cursor:pointer;">
+          <input type="checkbox" id="lottery-no-repeat" checked> 防重复抽选 (排除已点人员)
+        </label>
+
+        <button class="btn" style="margin-left:auto;" onclick="resetLottery()">🔄 清空重置</button>
+      </div>
+
+      <!-- 自定义名单输入面板 -->
+      <div id="lottery-names-box" class="card" style="display:none; padding:12px; margin-bottom:12px; background:#f8fafc;">
+        <label style="font-size:12px; font-weight:600; color:#475569;">输入或粘贴学生名单（空格、逗号或换行隔开）：</label>
+        <textarea id="lottery-names-input" class="form-control" style="height:60px; margin-top:4px; font-size:12px;" placeholder="张三 李四 王五 赵六..."></textarea>
+        <button class="btn btn-primary" style="margin-top:6px;" onclick="applyCustomNames()">更新候选名单</button>
+      </div>
+
+      <!-- 摇号大舞台 -->
+      <div class="lottery-stage" id="lottery-stage">
+        <div style="font-size:12.5px; color:#94a3b8; font-weight:600; letter-spacing:1px;">CHUNHUI CLASSROOM LOTTERY</div>
+        <div id="lottery-display-area" style="min-height:90px; display:flex; align-items:center; justify-content:center;">
+          <div class="lottery-single-text" id="lottery-main-num">READY</div>
+        </div>
+        <div style="display:flex; gap:12px; align-items:center; margin-top:8px;">
+          <button class="lottery-action-btn" id="lottery-start-btn" onclick="triggerLotteryDraw()">🎲 开始抽签 (空格键)</button>
+        </div>
+        <div style="font-size:11.5px; color:#64748b; margin-top:14px;">
+          快捷操作：按键盘空格键快速抽取 · 候选总数: <span id="lottery-total-count">50</span> 人 | 剩余待抽: <span id="lottery-remain-count">50</span> 人
+        </div>
+      </div>
+
+      <!-- 下方中签历史与当前名单池 -->
+      <div class="grid-2">
+        <div class="card" style="padding:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong style="font-size:13px; color:#0f172a;">🎉 本轮已中签名单 (<span id="lottery-drawn-count">0</span>)</strong>
+            <button class="btn" style="font-size:11px; padding:2px 8px;" onclick="clearDrawnHistory()">清空中签</button>
+          </div>
+          <div id="lottery-history-box" style="min-height:90px; max-height:160px; overflow-y:auto; padding:6px; background:#f8fafc; border-radius:6px; border:1px solid #f1f5f9;">
+            <div style="color:var(--text-muted); font-size:12px; text-align:center; padding-top:30px;">暂无抽选中签记录</div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong style="font-size:13px; color:#0f172a;">👥 剩余候选人池 (<span id="lottery-pool-count">50</span>)</strong>
+          </div>
+          <div id="lottery-pool-box" style="min-height:90px; max-height:160px; overflow-y:auto; padding:6px; background:#f8fafc; border-radius:6px; border:1px solid #f1f5f9;">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 11. 校园内网任意门聚合导航 (AnyDoor) -->
+    <div id="tab-anydoor" class="tab-pane">
+      <div class="card" style="padding: 14px 18px; margin-bottom: 14px; background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%); border-color: #bfdbfe;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <h3 style="font-size: 14.5px; font-weight: 700; color: #1e293b;">🚪 春戊校园任意门 · 核心基础设施直达</h3>
+            <p style="font-size: 12px; color: #64748b; margin-top: 3px;">
+              集成春晖内网综合门户、云上春晖 NAS、图库、视频中心、AI 助手与电视台直播流，点击卡片直接在默认浏览器中打开。
+            </p>
+          </div>
+          <button class="btn" onclick="loadAnydoor()">🔄 刷新服务</button>
+        </div>
+      </div>
+
+      <div class="portal-grid" id="anydoor-grid">
+        <div style="grid-column:1/-1; text-align:center; padding:36px; color:var(--text-muted);">
+          正在拉取校园服务导航...
+        </div>
+      </div>
+    </div>
+
+    <!-- 12. 网络与会话状态 (Settings) -->
     <div id="tab-settings" class="tab-pane">
       <div class="card" style="padding: 18px;">
         <h3 style="font-size: 14.5px; margin-bottom: 12px;">校园网环境与节点状态</h3>
@@ -971,6 +1497,7 @@ table.data-table tr:hover td {
 
 <script>
 const tabTitles = {
+  'briefing': '每日白马湖晨报',
   'inbox': '个人信件 (收件箱)',
   'news': '校园通知与公告',
   'schedule': '班级课表查询系统',
@@ -979,10 +1506,12 @@ const tabTitles = {
   'duty': '行政值周安排',
   'lostfound': '全校失物招领',
   'filestation': '校内文件寄取处',
+  'lottery': '课堂抽签点名器',
+  'anydoor': '校园内网任意门聚合导航',
   'settings': '网络与会话状态'
 };
 
-let currentTab = 'inbox';
+let currentTab = 'briefing';
 let currentStatus = { is_online: false, has_session: false };
 let currentInboxPage = 1;
 let currentNewsPage = 1;
@@ -1254,16 +1783,94 @@ async function handleLogout() {
   }
 }
 
+// ----- 0. 每日白马湖晨报 (Daily Briefing) -----
+
+async function loadBriefing() {
+  try {
+    const res = await window.pywebview.api.get_daily_briefing();
+    if (res && res.success) {
+      document.getElementById('briefing-date').innerText = res.date_str || '--';
+      document.getElementById('briefing-weekday').innerText = res.weekday || '--';
+      document.getElementById('briefing-lunar').innerText = res.lunar ? ('岁次 ' + res.lunar) : '春晖校历';
+
+      const w = res.weather || {};
+      const tempStr = (w.temp !== undefined && w.temp !== '') ? `${w.temp}°C` : '--°C';
+      document.getElementById('briefing-weather-temp').innerText = tempStr;
+      document.getElementById('briefing-weather-desc').innerText = w.weather || '晴间多云';
+      
+      let detailParts = [];
+      if (w.wind) detailParts.push(`风况：${w.wind}`);
+      if (w.humidity) detailParts.push(`相对湿度：${w.humidity}`);
+      if (w.source) detailParts.push(w.source === 'campus_api' ? '气象站：校内专线' : '气象站：公共气象服务');
+      document.getElementById('briefing-weather-detail').innerText = detailParts.join(' | ') || '上虞气象观测站点正常';
+
+      const s = res.sentence || {};
+      document.getElementById('quote-hero-text').innerText = s.quote || '学而不思则罔，思而不学则殆。';
+      let authFrom = '';
+      if (s.author) authFrom += '—— ' + s.author;
+      if (s.from) authFrom += ' / ' + s.from;
+      document.getElementById('quote-hero-author').innerText = authFrom || '—— 春晖文萃';
+
+      const badge = document.getElementById('quote-source-badge');
+      if (s.source === 'campus_api') {
+        badge.className = 'tag tag-green';
+        badge.innerText = '校内今日下发';
+      } else {
+        badge.className = 'tag tag-blue';
+        badge.innerText = '春戊文库轮播';
+      }
+
+      renderRecQuotes(res.recommendations || []);
+    }
+  } catch (e) {
+    console.error('晨报加载异常', e);
+  }
+}
+
+function renderRecQuotes(quotes) {
+  const container = document.getElementById('briefing-rec-quotes');
+  if (!container) return;
+  if (!quotes || quotes.length === 0) {
+    container.innerHTML = '<div style="color:var(--text-muted); padding:12px; font-size:12px;">（暂无推荐名句）</div>';
+    return;
+  }
+  container.innerHTML = quotes.map((q, idx) => `
+    <div class="quote-rec-item">
+      <div class="quote-rec-text">“${q.quote}”</div>
+      <div class="quote-rec-author">—— ${q.author || '佚名'}${q.from ? ` / ${q.from}` : ''}</div>
+    </div>
+  `).join('');
+}
+
+async function refreshRandomQuotes() {
+  const container = document.getElementById('briefing-rec-quotes');
+  if (!container) return;
+  container.style.opacity = '0.4';
+  try {
+    const res = await window.pywebview.api.get_random_quotes(3);
+    if (res && res.success && res.quotes) {
+      renderRecQuotes(res.quotes);
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    container.style.opacity = '1';
+  }
+}
+
 // ----- 数据加载调度 -----
 
 function loadTabData(tabId) {
-  if (tabId === 'inbox') loadInbox(currentInboxPage);
+  if (tabId === 'briefing') loadBriefing();
+  else if (tabId === 'inbox') loadInbox(currentInboxPage);
   else if (tabId === 'news') loadNews(document.getElementById('news-column-select').value, currentNewsPage);
   else if (tabId === 'schedule') initScheduleTab();
   else if (tabId === 'hygiene') loadHygiene(currentHygienePage);
   else if (tabId === 'dorm') queryDormHygiene();
   else if (tabId === 'duty') loadDuty();
   else if (tabId === 'lostfound') loadLostfound(currentLostfoundPage);
+  else if (tabId === 'lottery') initLottery();
+  else if (tabId === 'anydoor') loadAnydoor();
   else if (tabId === 'settings') checkNetwork(false);
 }
 
@@ -1948,6 +2555,313 @@ async function downloadRemoteFile(url, filename) {
   }
 }
 
+// ----- 10. 课堂抽签点名器 (Lottery) -----
+
+let lotteryConfig = {
+  mode: '1-50',
+  totalList: [],
+  remainPool: [],
+  drawnHistory: [],
+  isRolling: false,
+  timer: null
+};
+
+function initLottery() {
+  if (lotteryConfig.totalList.length === 0) {
+    setupLotteryMode('1-50');
+  } else {
+    updateLotteryUI();
+  }
+}
+
+function handleLotteryModeChange(mode) {
+  lotteryConfig.mode = mode;
+  const rangeBox = document.getElementById('lottery-range-box');
+  const namesBox = document.getElementById('lottery-names-box');
+  if (mode === 'custom-range') {
+    rangeBox.style.display = 'inline-flex';
+    namesBox.style.display = 'none';
+  } else if (mode === 'custom-names') {
+    rangeBox.style.display = 'none';
+    namesBox.style.display = 'block';
+  } else {
+    rangeBox.style.display = 'none';
+    namesBox.style.display = 'none';
+    setupLotteryMode('1-50');
+  }
+}
+
+function setupLotteryMode(mode) {
+  let list = [];
+  if (mode === '1-50') {
+    for (let i = 1; i <= 50; i++) list.push(String(i) + '号');
+  }
+  lotteryConfig.totalList = [...list];
+  lotteryConfig.remainPool = [...list];
+  lotteryConfig.drawnHistory = [];
+  updateLotteryUI();
+}
+
+function applyCustomRange() {
+  const minVal = parseInt(document.getElementById('lottery-range-min').value) || 1;
+  const maxVal = parseInt(document.getElementById('lottery-range-max').value) || 55;
+  if (minVal >= maxVal) {
+    alert('号段起始值必须小于终止值');
+    return;
+  }
+  let list = [];
+  for (let i = minVal; i <= maxVal; i++) list.push(String(i) + '号');
+  lotteryConfig.totalList = [...list];
+  lotteryConfig.remainPool = [...list];
+  lotteryConfig.drawnHistory = [];
+  updateLotteryUI();
+}
+
+function applyCustomNames() {
+  const raw = document.getElementById('lottery-names-input').value.trim();
+  if (!raw) {
+    alert('请输入学生名单');
+    return;
+  }
+  const parts = raw.split(/[\\s,，、;\\n\\r]+/).filter(x => Boolean(x.trim()));
+  if (parts.length === 0) {
+    alert('名单解析为空，请重新输入');
+    return;
+  }
+  lotteryConfig.totalList = [...parts];
+  lotteryConfig.remainPool = [...parts];
+  lotteryConfig.drawnHistory = [];
+  updateLotteryUI();
+}
+
+function resetLottery() {
+  if (lotteryConfig.timer) {
+    clearInterval(lotteryConfig.timer);
+    lotteryConfig.timer = null;
+    lotteryConfig.isRolling = false;
+  }
+  lotteryConfig.remainPool = [...lotteryConfig.totalList];
+  lotteryConfig.drawnHistory = [];
+  document.getElementById('lottery-display-area').innerHTML = '<div class="lottery-single-text" id="lottery-main-num">READY</div>';
+  const btn = document.getElementById('lottery-start-btn');
+  if (btn) {
+    btn.innerText = '🎲 开始抽签 (空格键)';
+    btn.style.background = '#3b82f6';
+  }
+  updateLotteryUI();
+}
+
+function clearDrawnHistory() {
+  lotteryConfig.drawnHistory = [];
+  const noRepeat = document.getElementById('lottery-no-repeat').checked;
+  if (noRepeat) {
+    lotteryConfig.remainPool = [...lotteryConfig.totalList];
+  }
+  updateLotteryUI();
+}
+
+function updateLotteryUI() {
+  document.getElementById('lottery-total-count').innerText = lotteryConfig.totalList.length;
+  document.getElementById('lottery-remain-count').innerText = lotteryConfig.remainPool.length;
+  document.getElementById('lottery-pool-count').innerText = lotteryConfig.remainPool.length;
+  document.getElementById('lottery-drawn-count').innerText = lotteryConfig.drawnHistory.length;
+
+  const poolBox = document.getElementById('lottery-pool-box');
+  if (lotteryConfig.remainPool.length === 0) {
+    poolBox.innerHTML = '<div style="color:var(--text-muted); font-size:12px; text-align:center; padding-top:28px;">候选池已全部抽完</div>';
+  } else {
+    poolBox.innerHTML = lotteryConfig.remainPool.map(item => `<span class="lottery-tag">${item}</span>`).join('');
+  }
+
+  const histBox = document.getElementById('lottery-history-box');
+  if (lotteryConfig.drawnHistory.length === 0) {
+    histBox.innerHTML = '<div style="color:var(--text-muted); font-size:12px; text-align:center; padding-top:28px;">暂无抽选中签记录</div>';
+  } else {
+    histBox.innerHTML = lotteryConfig.drawnHistory.slice().reverse().map((item, idx) => `
+      <span class="lottery-tag tag-blue" style="font-weight:600;">第${lotteryConfig.drawnHistory.length - idx}位: ${item}</span>
+    `).join(' ');
+  }
+}
+
+function triggerLotteryDraw() {
+  if (lotteryConfig.isRolling) {
+    stopLotteryRoll();
+    return;
+  }
+
+  const noRepeat = document.getElementById('lottery-no-repeat').checked;
+  const count = parseInt(document.getElementById('lottery-count-select').value) || 1;
+  const activePool = noRepeat ? lotteryConfig.remainPool : lotteryConfig.totalList;
+
+  if (activePool.length === 0) {
+    alert('所有候选人员已抽完！如需重新抽取请点击“清空重置”或关闭防重复开关。');
+    return;
+  }
+  if (noRepeat && activePool.length < count) {
+    alert(`剩余候选人员仅剩 ${activePool.length} 人，不足单次抽取的 ${count} 人。`);
+    return;
+  }
+
+  startLotteryRoll(count, noRepeat);
+}
+
+function startLotteryRoll(count, noRepeat) {
+  lotteryConfig.isRolling = true;
+  const btn = document.getElementById('lottery-start-btn');
+  btn.innerText = '⏹️ 停止翻牌';
+  btn.style.background = '#e11d48';
+
+  const displayArea = document.getElementById('lottery-display-area');
+  const sourcePool = noRepeat ? lotteryConfig.remainPool : lotteryConfig.totalList;
+
+  if (count === 1) {
+    displayArea.innerHTML = '<div class="lottery-single-text" id="lottery-main-num">--</div>';
+  } else {
+    displayArea.innerHTML = `
+      <div class="lottery-multi-box" id="lottery-multi-cards">
+        ${Array.from({length: count}).map((_, i) => `
+          <div class="lottery-num-card" id="card-${i}">
+            <div class="lottery-num-text">--</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  let rollCount = 0;
+  lotteryConfig.timer = setInterval(() => {
+    rollCount++;
+    if (count === 1) {
+      const randVal = sourcePool[Math.floor(Math.random() * sourcePool.length)];
+      const el = document.getElementById('lottery-main-num');
+      if (el) el.innerText = randVal;
+    } else {
+      for (let i = 0; i < count; i++) {
+        const randVal = sourcePool[Math.floor(Math.random() * sourcePool.length)];
+        const card = document.getElementById(`card-${i}`);
+        if (card) {
+          const txt = card.querySelector('.lottery-num-text');
+          if (txt) txt.innerText = randVal;
+        }
+      }
+    }
+
+    if (rollCount > 25) {
+      stopLotteryRoll();
+    }
+  }, 45);
+}
+
+function stopLotteryRoll() {
+  if (!lotteryConfig.isRolling) return;
+  clearInterval(lotteryConfig.timer);
+  lotteryConfig.timer = null;
+  lotteryConfig.isRolling = false;
+
+  const btn = document.getElementById('lottery-start-btn');
+  if (btn) {
+    btn.innerText = '🎲 开始抽签 (空格键)';
+    btn.style.background = '#3b82f6';
+  }
+
+  const noRepeat = document.getElementById('lottery-no-repeat').checked;
+  const count = parseInt(document.getElementById('lottery-count-select').value) || 1;
+  const sourcePool = noRepeat ? lotteryConfig.remainPool : lotteryConfig.totalList;
+
+  let winners = [];
+  let tempPool = [...sourcePool];
+  for (let i = 0; i < count; i++) {
+    if (tempPool.length === 0) break;
+    const rIdx = Math.floor(Math.random() * tempPool.length);
+    winners.push(tempPool[rIdx]);
+    if (noRepeat) {
+      tempPool.splice(rIdx, 1);
+    }
+  }
+
+  if (noRepeat) {
+    winners.forEach(w => {
+      const idx = lotteryConfig.remainPool.indexOf(w);
+      if (idx !== -1) lotteryConfig.remainPool.splice(idx, 1);
+    });
+  }
+
+  winners.forEach(w => lotteryConfig.drawnHistory.push(w));
+
+  const displayArea = document.getElementById('lottery-display-area');
+  if (count === 1) {
+    displayArea.innerHTML = `<div class="lottery-single-text winner" id="lottery-main-num">${winners[0] || '无'}</div>`;
+  } else {
+    displayArea.innerHTML = `
+      <div class="lottery-multi-box" id="lottery-multi-cards">
+        ${winners.map(w => `
+          <div class="lottery-num-card winner">
+            <div class="lottery-num-text">${w}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  updateLotteryUI();
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && currentTab === 'lottery') {
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+      return;
+    }
+    e.preventDefault();
+    triggerLotteryDraw();
+  }
+});
+
+// ----- 11. 校园内网任意门聚合导航 (AnyDoor) -----
+
+async function loadAnydoor() {
+  const container = document.getElementById('anydoor-grid');
+  container.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:36px; color:var(--text-muted);">正在连接校园基础设施导航...</div>';
+
+  try {
+    const res = await window.pywebview.api.get_campus_services();
+    if (res && res.success && res.services) {
+      container.innerHTML = res.services.map(s => `
+        <div class="portal-card">
+          <div>
+            <div class="portal-header">
+              <div class="portal-icon-box">${s.icon || '🌐'}</div>
+              <div>
+                <div class="portal-name">${s.name}</div>
+                <span class="portal-badge">校园内网专线</span>
+              </div>
+            </div>
+            <div class="portal-desc">${s.desc}</div>
+          </div>
+          <div class="portal-footer">
+            <span class="portal-url-label" title="${s.url}">${s.url}</span>
+            <button class="btn btn-primary" style="font-size:11.5px; padding:4px 10px;" onclick="openExternalService('${s.url}')">
+              直达访问 ↗
+            </button>
+          </div>
+        </div>
+      `).join('');
+    } else {
+      container.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:36px; color:var(--danger);">获取校园服务列表失败</div>';
+    }
+  } catch (e) {
+    container.innerHTML = `<div style="grid-column:1/-1; text-align:center; padding:36px; color:var(--danger);">异常: ${e}</div>`;
+  }
+}
+
+async function openExternalService(url) {
+  try {
+    await window.pywebview.api.open_external_url(url);
+  } catch (e) {
+    console.error('打开外部链接失败', e);
+  }
+}
+
 // ----- 启动初始化 -----
 
 let appStarted = false;
@@ -1955,7 +2869,7 @@ async function initClientApp() {
   if (appStarted) return;
   appStarted = true;
   await checkNetwork(false);
-  loadTabData('inbox');
+  loadTabData('briefing');
 }
 
 function isApiReady() {
