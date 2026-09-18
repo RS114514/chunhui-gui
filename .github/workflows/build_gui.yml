@@ -86,6 +86,7 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: latest
+        target_commitish: ${{ github.sha }}
         name: Latest GUI Release (Auto Build)
         body: |
           # 最新构建发布说明 (Latest Release)
